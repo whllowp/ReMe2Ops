@@ -49,6 +49,9 @@ extract_system_prompt: |
     constraints, avoidances.
   - **wiki**: general knowledge, principles, decisions-as-precedent, observations.
 
+  Never emit bucket `muscle`: it is reserved for SOPs promoted after repeated
+  successful reuse and is not an extraction target.
+
   Straddling two buckets: choose by center of gravity, meaning where a future
   reader would search from:
   - "User prefers small PRs" -> personal.
@@ -114,6 +117,8 @@ extract_system_prompt_zh: |
   - **procedure**：如何做某事；工作流、runbook、配方、方法。
   - **personal**：用户/团队/项目特定的身份、偏好、约定、约束、避让点。
   - **wiki**：通用知识、原则、作为先例的决策、观察。
+
+  禁止输出 bucket `muscle`：它保留给被反复成功复用后晋升固化的 SOP，不是提炼目标。
 
   横跨两个 bucket 时，按 center of gravity 选择，也就是未来读者会从哪里搜索：
   - “用户偏好小 PR” -> personal。

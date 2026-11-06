@@ -62,12 +62,13 @@ def test_graph_snapshot_returns_category_roots_digest_links_and_daily_leaves(tmp
 
             assert response.success is True
             assert response.metadata == {}
-            assert [node.id for node in graph.nodes[:3]] == [
+            assert [node.id for node in graph.nodes[:4]] == [
                 "virtual:wiki",
                 "virtual:personal",
                 "virtual:procedure",
+                "virtual:muscle",
             ]
-            assert [node.path for node in graph.nodes[3:]] == [
+            assert [node.path for node in graph.nodes[4:]] == [
                 "daily/2026-08-05/event.md",
                 "digest/personal/beta.md",
                 "digest/procedure/how-to.md",
@@ -76,6 +77,7 @@ def test_graph_snapshot_returns_category_roots_digest_links_and_daily_leaves(tmp
             nodes = {node.id: node for node in graph.nodes}
             assert nodes["virtual:wiki"].path == "digest/wiki"
             assert nodes["virtual:procedure"].path == "digest/procedure"
+            assert nodes["virtual:muscle"].path == "digest/muscle"
             assert nodes["virtual:wiki"].virtual is True
             assert nodes["digest/wiki/alpha.md"].name == "Alpha"
             assert nodes["digest/wiki/alpha.md"].description == "Root note"

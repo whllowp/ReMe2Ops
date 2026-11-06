@@ -1,0 +1,143 @@
+# Ops edge instance: short-term memory (fast local retrieval) + distillation push.
+#
+# Start next to a cloud instance (see ops_cloud.yaml):
+#   reme start config=ops_edge service.port=2333 workspace_dir=/path/to/edge-workspace
+#
+# Cloud coordinates default to 127.0.0.1:2444 and can be overridden with the
+# OPS_CLOUD_HOST / OPS_CLOUD_PORT environment variables.
+extends: default
+
+jobs:
+  # Long-term sedimentation lives on the cloud; the edge never dreams locally.
+  dream_cron:
+    enabled: false
+  auto_dream:
+    enabled: false
+
+  ops_search:
+    backend: base
+    description: >-
+      Tiered ops memory search: local muscle reflex (digest/muscle mirror),
+      short-term daily working memory, then cloud long-term digest via
+      node_search; merged, tier-weighted, and boosted by solved/failed usage.
+    parameters:
+      type: object
+      properties:
+        query:
+          type: string
+          description: "search query"
+        limit:
+          type: integer
+          description: "max merged results"
+          default: 5
+      required:
+        - query
+    steps:
+      - backend: ops_search_step
+        tier_limit: 5
+        usage_boost: 0.05
+        muscle_weight: 1.0
+        daily_weight: 0.6
+        cloud_weight: 0.4
+        cloud_host: ${OPS_CLOUD_HOST:-127.0.0.1}
+        cloud_port: ${OPS_CLOUD_PORT:-2444}
+        cloud_timeout: 8.0
+
+  ops_feedback:
+    backend: base
+    description: >-
+      Record whether an ops_search hit solved the incident; usage deltas are
+      synced to the cloud by ops_muscle_sync and drive SOP promotion.
+    parameters:
+      type: object
+      properties:
+        path:
+          type: string
+          description: "workspace-relative digest path that was used"
+        outcome:
+          type: string
+          enum: [solved, failed]
+          description: "did the memory solve the problem"
+        query:
+          type: string
+          description: "optional originating query"
+          default: ""
+        session_id:
+          type: string
+          description: "optional incident/session id"
+          default: ""
+      required:
+        - path
+        - outcome
+    steps:
+      - backend: ops_feedback_step
+
+  ops_dream_push:
+    backend: base
+    description: >-
+      Extract memory units from recent daily notes and push them to the cloud
+      for long-term integration; failed pushes stay deferred for the next run.
+    parameters:
+      type: object
+      properties:
+        date:
+          type: string
+          description: "YYYY-MM-DD anchor; defaults to today in the edge timezone"
+          default: ""
+        scan_days:
+          type: integer
+          description: "number of recent daily directories to scan, ending at date"
+          default: 2
+        max_units:
+          type: integer
+          description: "maximum number of extracted memory units"
+          default: 5
+        max_chars_per_batch:
+          type: integer
+          description: "estimated bytes of changed file content per extraction call"
+          default: 40000
+        hint:
+          type: string
+          description: "caller guidance passed through to dream extract/integrate"
+          default: ""
+        source_device:
+          type: string
+          description: "edge device label recorded in cloud metadata"
+          default: "edge"
+    steps: &ops_push_steps
+      - backend: dream_extract_step
+        file_catalog: dream
+        scan_days: 2
+        max_units: 5
+        max_chars_per_batch: 40000
+      - backend: ops_push_step
+        source_device: edge
+        cloud_host: ${OPS_CLOUD_HOST:-127.0.0.1}
+        cloud_port: ${OPS_CLOUD_PORT:-2444}
+        cloud_timeout: 30.0
+      - backend: dream_finish_step
+        file_catalog: dream
+
+  ops_dream_push_cron:
+    backend: cron
+    cron: "30 22 * * *"
+    steps: *ops_push_steps
+
+  ops_muscle_sync:
+    backend: base
+    description: >-
+      Push usage deltas to the cloud and mirror muscle SOPs into the local
+      digest/muscle directory; the index watcher picks up changes instantly.
+    parameters:
+      type: object
+      properties: {}
+    steps: &ops_muscle_sync_steps
+      - backend: ops_muscle_sync_step
+        cloud_host: ${OPS_CLOUD_HOST:-127.0.0.1}
+        cloud_port: ${OPS_CLOUD_PORT:-2444}
+        cloud_timeout: 15.0
+
+  ops_muscle_sync_cron:
+    backend: cron
+    cron: "0 6 * * *"
+    steps: *ops_muscle_sync_steps

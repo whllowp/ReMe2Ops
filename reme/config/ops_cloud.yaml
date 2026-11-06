@@ -1,0 +1,93 @@
+# Ops cloud instance: long-term knowledge sedimentation + muscle SOP promotion.
+#
+# Start next to an edge instance (see ops_edge.yaml):
+#   reme start config=ops_cloud service.port=2444 workspace_dir=/path/to/cloud-workspace
+extends: default
+
+jobs:
+  # Edge devices push units via cloud_ingest; a local dream would double-process.
+  dream_cron:
+    enabled: false
+  # The cloud has no daily working memory; proactive agenda stays an edge job.
+  proactive_refresh_cron:
+    enabled: false
+
+  cloud_ingest:
+    backend: base
+    description: >-
+      Ingest memory units pushed from an edge device and integrate them into
+      the long-term digest (procedure/personal/wiki) with source provenance.
+    parameters:
+      type: object
+      properties:
+        units:
+          type: array
+          description: "memory units: {name, bucket, summary, paths}"
+          items:
+            type: object
+        source_device:
+          type: string
+          description: "edge device label"
+          default: ""
+        date:
+          type: string
+          description: "YYYY-MM-DD the units were extracted on"
+          default: ""
+      required:
+        - units
+    steps:
+      - backend: ops_ingest_seed_step
+      - backend: dream_integrate_step
+      - backend: auto_tag_step
+
+  muscle_list:
+    backend: base
+    description: "List muscle-bucket SOP files (path, mtime, content) for edge mirrors."
+    parameters:
+      type: object
+      properties: {}
+    steps:
+      - backend: ops_muscle_list_step
+
+  ops_usage_ingest:
+    backend: base
+    description: >-
+      Append edge usage records (solved/failed per digest path) to the cloud
+      aggregate that drives muscle promotion.
+    parameters:
+      type: object
+      properties:
+        records:
+          type: array
+          description: "usage records: {ts, path, outcome, query?, session_id?}"
+          items:
+            type: object
+      required:
+        - records
+    steps:
+      - backend: ops_usage_ingest_step
+
+  ops_muscle_promote:
+    backend: base
+    description: >-
+      Promote one digest SOP into the muscle bucket (move + frontmatter stamp;
+      inbound wikilinks are retargeted automatically).
+    parameters:
+      type: object
+      properties:
+        path:
+          type: string
+          description: "workspace-relative digest SOP path"
+      required:
+        - path
+    steps:
+      - backend: ops_muscle_promote_step
+
+  ops_promotion_cron:
+    backend: cron
+    cron: "0 4 * * *"
+    steps:
+      - backend: ops_promotion_scan_step
+        min_solved: 5
+        min_success_rate: 0.8
+        max_promotions_per_run: 3

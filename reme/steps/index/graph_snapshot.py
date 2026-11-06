@@ -1,4 +1,4 @@
-"""Return the digest graph, rooted by its three memory categories."""
+"""Return the digest graph, rooted by its memory categories."""
 
 from ..base_step import BaseStep
 from ...components import R
@@ -9,6 +9,7 @@ _CATEGORY_BUCKETS = (
     DreamBucketEnum.WIKI,
     DreamBucketEnum.PERSONAL,
     DreamBucketEnum.PROCEDURE,
+    DreamBucketEnum.MUSCLE,
 )
 
 

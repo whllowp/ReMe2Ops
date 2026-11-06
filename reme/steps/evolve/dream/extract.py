@@ -169,7 +169,9 @@ class DreamExtractStep(BaseStep):
         system_prompt = self.prompt_format(
             "extract_system_prompt",
             workspace_dir=str(workspace),
-            buckets=", ".join(bucket.value for bucket in DreamBucketEnum),
+            # MUSCLE is promotion-only (ops muscle memory); extraction must
+            # never route units there directly.
+            buckets=", ".join(bucket.value for bucket in DreamBucketEnum if bucket is not DreamBucketEnum.MUSCLE),
             max_units=max_units,
             output_schema_json=json.dumps(output_schema, ensure_ascii=False, indent=2),
         )
