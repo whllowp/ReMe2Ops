@@ -6,6 +6,7 @@ from ...components import R
 from ...components.as_decision_model.base_as_decision_model import BaseAsDecisionModel
 from ...enumeration import ComponentEnum
 from ..base_step import BaseStep, Ref
+from .connector import broadcast_muscle_update
 from .judge import judge_sops
 from .usage import aggregate_usage, now_iso, read_usage_records, usage_file_path
 
@@ -75,6 +76,7 @@ class OpsMusclePromoteStep(BaseStep):
 
         # The reflex-card step (if enabled) consumes this context entry.
         self.context["promoted"] = {"from": path, "to": dst}
+        await broadcast_muscle_update(self, [dst])
         self.context.response.answer = f"Promoted {path} → {dst}"
         self.context.response.metadata["promoted"] = {"from": path, "to": dst}
         return self.context.response

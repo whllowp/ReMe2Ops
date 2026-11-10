@@ -141,3 +141,13 @@ jobs:
     backend: cron
     cron: "0 6 * * *"
     steps: *ops_muscle_sync_steps
+
+  # Live connector session: muscle promotions reach the edge in seconds.
+  # Drop this job (or lose 'websockets') and the sync cron remains the
+  # fallback path. Reconnects use the background supervisor's backoff.
+  ops_connector:
+    backend: ops_connector
+    cloud_host: ${OPS_CLOUD_HOST:-127.0.0.1}
+    cloud_port: ${OPS_CLOUD_PORT:-2444}
+    ping_interval: 30.0
+    connect_timeout: 10.0

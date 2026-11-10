@@ -60,6 +60,7 @@ STAGES = [
     Stage("judge", "决策模型快判：一次成功使用即判定是否固化（需决策模型）"),
     Stage("promote", "知识固化：达标 SOP 晋升 muscle 桶", needs_llm=True),
     Stage("sync", "肌肉下发：边端镜像 muscle + 上行 usage"),
+    Stage("devices", "连接器在线设备：GET /ops/devices 实时清单"),
     Stage("reflex", "反射命中：同一查询直接命中本地肌肉记忆"),
 ]
 
@@ -167,6 +168,17 @@ def stage_sync(client: httpx.Client, state: dict) -> None:
         print(f"  已镜像: {path}")
 
 
+def stage_devices(client: httpx.Client, state: dict) -> None:
+    resp = client.get(f"{CLOUD}/ops/devices", timeout=10.0)
+    resp.raise_for_status()
+    data = resp.json()
+    devices = data.get("metadata", {}).get("devices", [])
+    print(f"  在线客户端 {len(devices)} 个")
+    for device in devices:
+        print(f"  - {device.get('device_id')} (connected {device.get('connected_at')}, "
+              f"in={device.get('messages_in')}, out={device.get('events_out')})")
+
+
 def stage_reflex(client: httpx.Client, state: dict) -> None:
     data = stage_search(client, state)
     results = data.get("metadata", {}).get("results", [])
@@ -184,6 +196,7 @@ STAGE_FUNCS = {
     "judge": stage_judge,
     "promote": stage_promote,
     "sync": stage_sync,
+    "devices": stage_devices,
     "reflex": stage_reflex,
 }
 

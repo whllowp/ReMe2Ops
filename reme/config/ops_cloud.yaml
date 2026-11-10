@@ -10,6 +10,12 @@
 # usage-based promotion loop remains the only path to muscle memory.
 extends: default
 
+# The connector service keeps every HTTP/MCP endpoint of the default http
+# service and adds WS /ops/connector + GET /ops/devices, so clients can
+# attach at any time and receive muscle.updated pushes in real time.
+service:
+  backend: ops_http
+
 jobs:
   # Edge devices push units via cloud_ingest; a local dream would double-process.
   dream_cron:
