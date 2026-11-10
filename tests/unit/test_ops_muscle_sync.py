@@ -6,6 +6,7 @@ from unittest.mock import Mock
 import pytest
 
 from reme.components import ApplicationContext
+from reme.components.file_store import BaseFileStore
 from reme.components.runtime_context import RuntimeContext
 from reme.steps.ops.muscle_sync import (
     OpsMuscleSyncStep,
@@ -56,7 +57,10 @@ def test_manifest_roundtrip_and_corruption(tmp_path):
 
 
 def _step(tmp_path):
-    return OpsMuscleSyncStep(app_context=ApplicationContext(workspace_dir=str(tmp_path)))
+    return OpsMuscleSyncStep(
+        app_context=ApplicationContext(workspace_dir=str(tmp_path)),
+        file_store=Mock(spec=BaseFileStore, workspace_path=tmp_path),
+    )
 
 
 async def _run_sync(tmp_path, monkeypatch, *, usage_response, list_response, existing_usage=()):
@@ -85,13 +89,12 @@ async def _run_sync(tmp_path, monkeypatch, *, usage_response, list_response, exi
             fh.write(json.dumps(record, ensure_ascii=False) + "\n")
 
     step = _step(tmp_path)
-    step.file_store = Mock(workspace_path=tmp_path)
     response = await step(RuntimeContext())
     return response, calls, usage_file
 
 
 @pytest.mark.asyncio
-async def sync_pushes_usage_and_mirrors_muscle_files(tmp_path, monkeypatch):
+async def test_sync_pushes_usage_and_mirrors_muscle_files(tmp_path, monkeypatch):
     remote_a = _remote("digest/muscle/a.md", 100, content="---\nname: a\n---\nrunbook a")
     response, calls, _ = await _run_sync(
         tmp_path,
@@ -124,7 +127,7 @@ async def sync_pushes_usage_and_mirrors_muscle_files(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def sync_removes_unlisted_mirrors_and_survives_cloud_failure(tmp_path, monkeypatch):
+async def test_sync_removes_unlisted_mirrors_and_survives_cloud_failure(tmp_path, monkeypatch):
     mirror = tmp_path / "digest" / "muscle" / "stale.md"
     mirror.parent.mkdir(parents=True)
     mirror.write_text("stale", encoding="utf-8")
@@ -137,7 +140,6 @@ async def sync_removes_unlisted_mirrors_and_survives_cloud_failure(tmp_path, mon
 
     monkeypatch.setattr("reme.steps.ops.muscle_sync.CloudClient", DownCloud)
     step = _step(tmp_path)
-    step.file_store = Mock(workspace_path=tmp_path)
     response = await step(RuntimeContext())
 
     assert response.success is False
@@ -155,7 +157,7 @@ async def sync_removes_unlisted_mirrors_and_survives_cloud_failure(tmp_path, mon
 
 
 @pytest.mark.asyncio
-async def sync_defers_usage_push_when_cloud_rejects(tmp_path, monkeypatch):
+async def test_sync_defers_usage_push_when_cloud_rejects(tmp_path, monkeypatch):
     response, calls, usage_file = await _run_sync(
         tmp_path,
         monkeypatch,

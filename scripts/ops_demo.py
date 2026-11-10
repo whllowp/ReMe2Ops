@@ -57,6 +57,7 @@ STAGES = [
     Stage("search", "分层检索：肌肉反射 → 短期 → 云端回源"),
     Stage("push", "夜间提炼：dream 提取单元并推送云端沉淀", needs_llm=True),
     Stage("feedback", "使用反馈：记录 solved/failed（最优解的依据）"),
+    Stage("judge", "决策模型快判：一次成功使用即判定是否固化（需决策模型）"),
     Stage("promote", "知识固化：达标 SOP 晋升 muscle 桶", needs_llm=True),
     Stage("sync", "肌肉下发：边端镜像 muscle + 上行 usage"),
     Stage("reflex", "反射命中：同一查询直接命中本地肌肉记忆"),
@@ -124,10 +125,33 @@ def stage_feedback(client: httpx.Client, state: dict) -> None:
     print(f"  {path} stats={data.get('metadata', {}).get('path_stats')}")
 
 
+def stage_judge(client: httpx.Client, state: dict) -> None:
+    path = state.get("promote_path")
+    if not path:
+        print("  （跳过：没有可判定的 SOP 路径）")
+        return
+    stage_sync(client, state)  # usage 必须先上行，云端才有判定证据
+    data = post(client, CLOUD, "ops_muscle_judge", {"paths": [path], "auto_promote": True})
+    judge = data.get("metadata", {}).get("judge", {})
+    for verdict_path, verdict in (judge.get("verdicts") or {}).items():
+        if verdict.get("judged"):
+            print(f"  {verdict_path}: muscle_worthy={verdict.get('muscle_worthy')} "
+                  f"evidence={verdict.get('evidence')} promotable={verdict.get('promotable')}")
+        else:
+            print(f"  {verdict_path}: 未判定（{verdict.get('reason')}）——继续走 usage 慢路径")
+    if judge.get("promoted"):
+        state["auto_promoted"] = True
+        state["promote_path"] = judge["promoted"][0]["path"]
+        print(f"  ⚡ 决策模型即时固化: {state['promote_path']}")
+
+
 def stage_promote(client: httpx.Client, state: dict) -> None:
     path = state.get("promote_path")
     if not path:
         print("  （跳过：没有可固化的 SOP 路径）")
+        return
+    if state.get("auto_promoted"):
+        print("  （决策模型已即时固化，跳过手动晋升）")
         return
     data = post(client, CLOUD, "ops_muscle_promote", {"path": path})
     print(f"  {data.get('answer')}")
@@ -157,6 +181,7 @@ STAGE_FUNCS = {
     "search": stage_search,
     "push": stage_push,
     "feedback": stage_feedback,
+    "judge": stage_judge,
     "promote": stage_promote,
     "sync": stage_sync,
     "reflex": stage_reflex,

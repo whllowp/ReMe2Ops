@@ -150,7 +150,7 @@ def _search_response(results):
 
 
 @pytest.mark.asyncio
-async def ops_search_step_merges_local_and_cloud(tmp_path, monkeypatch):
+async def test_ops_search_step_merges_local_and_cloud(tmp_path, monkeypatch):
     muscle_results = [{"path": "digest/muscle/a.md", "text": "runbook body", "scores": {"score": 0.03}}]
     daily_results = [{"path": "daily/2026-11-06/incident.md", "text": "incident log", "scores": {"score": 0.02}}]
     cloud_payload = {
@@ -180,6 +180,7 @@ async def ops_search_step_merges_local_and_cloud(tmp_path, monkeypatch):
     monkeypatch.setattr("reme.steps.ops.tiered_search.CloudClient", StubCloud)
     step = OpsSearchStep(
         app_context=ApplicationContext(workspace_dir=str(tmp_path)),
+        file_store=Mock(spec=BaseFileStore, workspace_path=tmp_path),
         tier_limit=5,
         cloud_host="127.0.0.1",
         cloud_port=2444,
@@ -200,7 +201,7 @@ async def ops_search_step_merges_local_and_cloud(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def ops_search_step_survives_cloud_outage(tmp_path, monkeypatch):
+async def test_ops_search_step_survives_cloud_outage(tmp_path, monkeypatch):
     class StubCloud:
         def __init__(self, *args, **kwargs):
             raise ConnectionError("connection refused")
@@ -208,6 +209,7 @@ async def ops_search_step_survives_cloud_outage(tmp_path, monkeypatch):
     monkeypatch.setattr("reme.steps.ops.tiered_search.CloudClient", StubCloud)
     step = OpsSearchStep(
         app_context=ApplicationContext(workspace_dir=str(tmp_path)),
+        file_store=Mock(spec=BaseFileStore, workspace_path=tmp_path),
         cloud_host="127.0.0.1",
         cloud_port=2444,
     )
@@ -223,13 +225,16 @@ async def ops_search_step_survives_cloud_outage(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def ops_search_step_requires_query(tmp_path, monkeypatch):
+async def test_ops_search_step_requires_query(tmp_path, monkeypatch):
     class Unused:
         def __init__(self, *args, **kwargs):
             raise AssertionError("cloud must not be reached")
 
     monkeypatch.setattr("reme.steps.ops.tiered_search.CloudClient", Unused)
-    step = OpsSearchStep(app_context=ApplicationContext(workspace_dir=str(tmp_path)))
+    step = OpsSearchStep(
+        app_context=ApplicationContext(workspace_dir=str(tmp_path)),
+        file_store=Mock(spec=BaseFileStore, workspace_path=tmp_path),
+    )
     response = await step(RuntimeContext(query="   "))
     assert response.success is False
     assert "query" in response.answer

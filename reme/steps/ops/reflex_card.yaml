@@ -1,0 +1,37 @@
+reflex_card_system_prompt: |
+  You compress an ops runbook into a conditioned-reflex card: what an on-call
+  engineer should execute from memory before opening the full runbook.
+
+  Rules:
+  - `trigger`: one line describing exactly when to fire this reflex.
+  - `actions`: 3 to 8 imperative steps, execution order, each one line,
+    verbatim-safe (commands or unambiguous actions from the runbook).
+  - `pitfall`: the single mistake that ruins the outcome; empty when none.
+  - Never invent steps that are not in the runbook; if the runbook is too
+    vague for an action, drop it rather than guess.
+  - The card is prepended under a "{heading}" section; return JSON only:
+    {{"trigger": "...", "actions": ["...", ...], "pitfall": "..."}}
+
+reflex_card_system_prompt_zh: |
+  你把一篇运维 SOP 压缩成一张条件反射卡：值班工程师在展开全文之前，
+  靠记忆就该执行的要点。
+
+  规则：
+  - `trigger`：一行说明这条反射何时触发。
+  - `actions`：3 到 8 条命令式步骤，按执行顺序，每条一行，
+    必须来自 SOP 原文（命令或无歧义动作），不得臆造。
+  - `pitfall`：最容易毁掉结果的一个错误；没有则为空字符串。
+  - 卡片会插入到「{heading}」小节下；只返回 JSON：
+    {{"trigger": "...", "actions": ["...", ...], "pitfall": "..."}}
+
+reflex_card_user_message: |
+  Runbook path: {path}
+
+  Runbook body:
+  {body}
+
+reflex_card_user_message_zh: |
+  SOP 路径：{path}
+
+  SOP 正文：
+  {body}

@@ -30,7 +30,7 @@ def _context(units):
 
 
 @pytest.mark.asyncio
-async def push_success_keeps_paths_checkpointable(tmp_path, monkeypatch):
+async def test_push_success_keeps_paths_checkpointable(tmp_path, monkeypatch):
     cloud_payloads = []
 
     class StubCloud:
@@ -75,7 +75,7 @@ async def push_success_keeps_paths_checkpointable(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def push_transport_failure_defers_all_paths(tmp_path, monkeypatch):
+async def test_push_transport_failure_defers_all_paths(tmp_path, monkeypatch):
     class DownCloud:
         def __init__(self, *args, **kwargs):
             raise ConnectionError("cloud down")
@@ -92,7 +92,7 @@ async def push_transport_failure_defers_all_paths(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def push_cloud_rejection_defers_all_paths(tmp_path, monkeypatch):
+async def test_push_cloud_rejection_defers_all_paths(tmp_path, monkeypatch):
     class StubCloud:
         def __init__(self, *args, **kwargs):
             pass
@@ -118,7 +118,7 @@ async def push_cloud_rejection_defers_all_paths(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def push_partial_cloud_integration_defers_only_failed(tmp_path, monkeypatch):
+async def test_push_partial_cloud_integration_defers_only_failed(tmp_path, monkeypatch):
     class StubCloud:
         def __init__(self, *args, **kwargs):
             pass
@@ -155,7 +155,7 @@ async def push_partial_cloud_integration_defers_only_failed(tmp_path, monkeypatc
 
 
 @pytest.mark.asyncio
-async def push_without_units_is_a_noop(tmp_path, monkeypatch):
+async def test_push_without_units_is_a_noop(tmp_path, monkeypatch):
     class Unused:
         def __init__(self, *args, **kwargs):
             raise AssertionError("cloud must not be reached")

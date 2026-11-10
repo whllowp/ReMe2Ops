@@ -5,6 +5,7 @@ from unittest.mock import Mock
 import pytest
 
 from reme.components import ApplicationContext
+from reme.components.file_store import BaseFileStore
 from reme.components.runtime_context import RuntimeContext
 from reme.schema import DreamState
 from reme.steps.ops.ingest import OpsIngestSeedStep, normalize_ingest_units
@@ -49,9 +50,11 @@ def test_normalize_ingest_units_requires_list():
 
 
 @pytest.mark.asyncio
-async def seed_step_writes_dream_state_into_context(tmp_path):
-    step = OpsIngestSeedStep(app_context=ApplicationContext(workspace_dir=str(tmp_path)))
-    step.file_store = Mock(workspace_path=tmp_path)
+async def test_seed_step_writes_dream_state_into_context(tmp_path):
+    step = OpsIngestSeedStep(
+        app_context=ApplicationContext(workspace_dir=str(tmp_path)),
+        file_store=Mock(spec=BaseFileStore, workspace_path=tmp_path),
+    )
     context = RuntimeContext(units=[UNIT_A], source_device="edge-01", date="2026-11-06")
     response = await step(context)
 
@@ -66,9 +69,11 @@ async def seed_step_writes_dream_state_into_context(tmp_path):
 
 
 @pytest.mark.asyncio
-async def seed_step_rejects_empty_payload(tmp_path):
-    step = OpsIngestSeedStep(app_context=ApplicationContext(workspace_dir=str(tmp_path)))
-    step.file_store = Mock(workspace_path=tmp_path)
+async def test_seed_step_rejects_empty_payload(tmp_path):
+    step = OpsIngestSeedStep(
+        app_context=ApplicationContext(workspace_dir=str(tmp_path)),
+        file_store=Mock(spec=BaseFileStore, workspace_path=tmp_path),
+    )
     context = RuntimeContext(units=[], source_device="edge-01")
     response = await step(context)
 

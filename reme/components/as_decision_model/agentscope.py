@@ -4,7 +4,7 @@ import asyncio
 from collections.abc import Mapping
 from importlib import import_module
 import json
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter
 
@@ -22,6 +22,10 @@ class _DecisionOptions(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     model: str | None = Field(default=None, min_length=1)
+    model_class: Literal["jev", "openai"] = Field(
+        default="jev",
+        description="Provider adapter: ``jev`` (TypeSafe Jev API) or ``openai`` (OpenAI Decisions API).",
+    )
     timeout: float = Field(default=30.0, gt=0, allow_inf_nan=False)
     max_retries: int = Field(default=2, ge=0)
     retry_delay: float = Field(default=0.5, ge=0, allow_inf_nan=False)
@@ -40,6 +44,7 @@ class AgentScopeAsDecisionModel(BaseAsDecisionModel):
         self,
         credential: dict | None = None,
         model: str | None = None,
+        model_class: str = "jev",
         timeout: float = 30.0,
         max_retries: int = 2,
         retry_delay: float = 0.5,
@@ -49,6 +54,7 @@ class AgentScopeAsDecisionModel(BaseAsDecisionModel):
         self.credential = dict(credential or {})
         self.options = _DecisionOptions(
             model=model,
+            model_class=model_class,
             timeout=timeout,
             max_retries=max_retries,
             retry_delay=retry_delay,
@@ -80,11 +86,13 @@ class AgentScopeAsDecisionModel(BaseAsDecisionModel):
         self._model = value
 
     @staticmethod
-    def _load_decision_model():
+    def _load_decision_model(model_class: str = "jev"):
         """Load the optional AgentScope adapter on the first decision request."""
         try:
             module = import_module("agentscope.classifier")
             # Check exports as well as module presence for older installations.
+            if model_class == "openai":
+                return module.ClassifierQuestion, module.OpenAIClassifierModel
             return module.ClassifierQuestion, module.JevClassifierModel
         except (ImportError, AttributeError) as exc:
             raise ImportError(
@@ -104,7 +112,7 @@ class AgentScopeAsDecisionModel(BaseAsDecisionModel):
         if any(not isinstance(name, str) or not name.strip() for name in questions):
             raise ValueError("Decision question names must be non-empty strings.")
 
-        question_type, model_cls = self._load_decision_model()
+        question_type, model_cls = self._load_decision_model(self.options.model_class)
         adapter = TypeAdapter(question_type)
         parsed = {name: adapter.validate_python(question) for name, question in questions.items()}
         await self.start()
@@ -123,7 +131,7 @@ class AgentScopeAsDecisionModel(BaseAsDecisionModel):
                 # before cancellation can release the lifecycle lock.
                 self._owns_model = True
                 try:
-                    await complete_in_thread(self._create_model, model_cls, credential)
+                    await complete_in_thread(self._create_model, model_cls, credential, self.options.model_class)
                 except ImportError as exc:
                     raise ImportError(
                         "Decision model inference requires a compatible typesafe-sdk. "
@@ -143,12 +151,16 @@ class AgentScopeAsDecisionModel(BaseAsDecisionModel):
             if self._active_calls == 0:
                 self._idle.set()
 
-    def _create_model(self, model_cls, credential) -> None:
+    def _create_model(self, model_cls, credential, model_class: str = "jev") -> None:
         """Construct and retain the owned client, including synchronous TLS setup."""
-        credential_cls = import_module("agentscope.credential").TypeSafeCredential
+        credentials = import_module("agentscope.credential")
+        # `model_class` steers adapter selection here, never the provider ctor;
+        # the OpenAI Decisions adapter has no retry_delay knob.
+        excluded = {"model_class"} if model_class == "jev" else {"model_class", "retry_delay"}
+        credential_cls = credentials.TypeSafeCredential if model_class == "jev" else credentials.OpenAICredential
         self._model = model_cls(
             credential=credential_cls(**credential),
-            **self.options.model_dump(exclude_none=True),
+            **self.options.model_dump(exclude_none=True, exclude=excluded),
         )
 
     async def _close(self) -> None:

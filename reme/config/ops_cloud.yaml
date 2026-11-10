@@ -2,6 +2,12 @@
 #
 # Start next to an edge instance (see ops_edge.yaml):
 #   reme start config=ops_cloud service.port=2444 workspace_dir=/path/to/cloud-workspace
+#
+# Decision-model fast track (muscle promotion judged by any OpenAI-compatible
+# decision model such as Laya): set DECISION_MODEL_API_KEY, plus
+# DECISION_MODEL_BASE_URL / DECISION_MODEL_NAME when not using the default
+# agentscope classifier. Without a key the judge skips gracefully and the
+# usage-based promotion loop remains the only path to muscle memory.
 extends: default
 
 jobs:
@@ -53,7 +59,8 @@ jobs:
     backend: base
     description: >-
       Append edge usage records (solved/failed per digest path) to the cloud
-      aggregate that drives muscle promotion.
+      aggregate, then let the decision model fast-track confident SOPs into
+      muscle memory immediately.
     parameters:
       type: object
       properties:
@@ -66,12 +73,47 @@ jobs:
         - records
     steps:
       - backend: ops_usage_ingest_step
+      - backend: ops_muscle_judge_step
+        as_decision_model: muscle
+        auto_promote: true
+        muscle_worthy_threshold: 0.8
+        evidence_threshold: 0.6
+        min_solved: 1
+        judge_timeout: 30.0
+
+  ops_muscle_judge:
+    backend: base
+    description: >-
+      Judge given digest SOPs with the decision model (muscle-worthy +
+      evidence-sufficient probabilities); confident verdicts are promoted at
+      once when auto_promote is on.
+    parameters:
+      type: object
+      properties:
+        paths:
+          type: array
+          description: "workspace-relative digest SOP paths to judge"
+          items:
+            type: string
+        auto_promote:
+          type: boolean
+          description: "promote promotable verdicts immediately"
+          default: true
+    steps:
+      - backend: ops_muscle_judge_step
+        as_decision_model: muscle
+        auto_promote: true
+        muscle_worthy_threshold: 0.8
+        evidence_threshold: 0.6
+        min_solved: 1
+        judge_timeout: 30.0
 
   ops_muscle_promote:
     backend: base
     description: >-
       Promote one digest SOP into the muscle bucket (move + frontmatter stamp;
-      inbound wikilinks are retargeted automatically).
+      inbound wikilinks are retargeted automatically) and generate a compact
+      reflex card on top.
     parameters:
       type: object
       properties:
@@ -82,6 +124,9 @@ jobs:
         - path
     steps:
       - backend: ops_muscle_promote_step
+      - backend: ops_reflex_card_step
+        reflex_card: true
+        card_timeout: 60.0
 
   ops_promotion_cron:
     backend: cron
@@ -91,3 +136,21 @@ jobs:
         min_solved: 5
         min_success_rate: 0.8
         max_promotions_per_run: 3
+        as_decision_model: muscle
+        decision_fast_track: true
+        fast_track_min_solved: 1
+        max_fast_tracks_per_run: 2
+        muscle_worthy_threshold: 0.8
+        evidence_threshold: 0.6
+
+components:
+  as_decision_model:
+    muscle:
+      backend: ${DECISION_MODEL_BACKEND:-openai_chat}
+      model: ${DECISION_MODEL_NAME:-null}
+      credential:
+        api_key: ${DECISION_MODEL_API_KEY:-}
+        base_url: ${DECISION_MODEL_BASE_URL:-null}
+      timeout: 15
+      max_retries: 1
+      retry_delay: 0.5
