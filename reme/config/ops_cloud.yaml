@@ -139,8 +139,8 @@ jobs:
     cron: "0 4 * * *"
     steps:
       - backend: ops_promotion_scan_step
-        min_solved: 5
-        min_success_rate: 0.8
+        # min_solved/min_success_rate/score_threshold default to the deployed
+        # replay policy (metadata/ops_policy/policy.json) when not set here.
         max_promotions_per_run: 3
         as_decision_model: muscle
         decision_fast_track: true
@@ -148,6 +148,50 @@ jobs:
         max_fast_tracks_per_run: 2
         muscle_worthy_threshold: 0.8
         evidence_threshold: 0.6
+        lambda_rate: 0.4
+        lambda_solved: 0.3
+        lambda_breadth: 0.3
+        solved_cap: 20
+        score_threshold: 0.45
+
+  # Policy-level RSI loop (Dream-RSI): replay usage worlds, deploy the best
+  # promotion policy; the scan picks it up as runtime defaults.
+  ops_policy_evolve:
+    backend: base
+    enable_serve: true
+    description: >-
+      Replay recorded usage worlds under candidate promotion policies
+      (deployed + deterministic grid) and deploy the best-scoring one.
+    parameters:
+      type: object
+      properties:
+        policies:
+          type: array
+          description: "explicit candidate policies; omit for the grid"
+          items:
+            type: object
+    steps: &ops_policy_steps
+      - backend: ops_replay_step
+      - backend: ops_policy_evolve_step
+
+  ops_policy_evolve_cron:
+    backend: cron
+    cron: "30 3 * * *"
+    steps: *ops_policy_steps
+
+  # Generalize operator (Harmony Harness): audit muscle scope placement.
+  ops_generalize:
+    backend: base
+    enable_serve: true
+    description: >-
+      Audit muscle SOPs with an LLM and move them between general and
+      device scopes (promote/demote); changes filing, never capability.
+    parameters:
+      type: object
+      properties: {}
+    steps:
+      - backend: ops_generalize_step
+        audit_timeout: 90.0
 
 components:
   as_decision_model:

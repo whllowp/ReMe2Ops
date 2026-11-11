@@ -58,8 +58,9 @@ def now_iso() -> str:
 def aggregate_usage(records: list[dict]) -> dict[str, dict]:
     """Aggregate records by digest path into counters.
 
-    Returns ``{path: {solved, failed, total, success_rate, last_used}}``;
-    records with an unknown path or outcome are ignored.
+    Returns ``{path: {solved, failed, total, success_rate, last_used, devices,
+    device_list}}``; records with an unknown path or outcome are ignored. The
+    ``devices``/``device_list`` fields back the multi-objective breadth term.
     """
     stats: dict[str, dict] = {}
     for record in records:
@@ -71,7 +72,7 @@ def aggregate_usage(records: list[dict]) -> dict[str, dict]:
             continue
         entry = stats.setdefault(
             path,
-            {"solved": 0, "failed": 0, "total": 0, "success_rate": 0.0, "last_used": ""},
+            {"solved": 0, "failed": 0, "total": 0, "success_rate": 0.0, "last_used": "", "devices": 0, "device_list": []},
         )
         entry[outcome] += 1
         entry["total"] += 1
@@ -79,4 +80,8 @@ def aggregate_usage(records: list[dict]) -> dict[str, dict]:
         last_used = str(record.get("ts") or "")
         if last_used > entry["last_used"]:
             entry["last_used"] = last_used
+        device = str(record.get("source_device") or "").strip()
+        if device and device not in entry["device_list"]:
+            entry["device_list"].append(device)
+            entry["devices"] = len(entry["device_list"])
     return stats

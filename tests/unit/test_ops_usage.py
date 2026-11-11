@@ -61,8 +61,22 @@ def test_aggregate_usage_counts_and_rates():
         "total": 3,
         "success_rate": 0.6667,
         "last_used": "2026-11-03T08:00:00",
+        "devices": 0,
+        "device_list": [],
     }
     assert stats["digest/muscle/m.md"]["solved"] == 1
+
+
+def test_aggregate_usage_tracks_device_breadth():
+    records = [
+        {"path": "p.md", "outcome": "solved", "source_device": "d1"},
+        {"path": "p.md", "outcome": "solved", "source_device": "d2"},
+        {"path": "p.md", "outcome": "solved", "source_device": "d1"},  # dedup
+        {"path": "p.md", "outcome": "failed"},
+    ]
+    stats = aggregate_usage(records)
+    assert stats["p.md"]["devices"] == 2
+    assert stats["p.md"]["device_list"] == ["d1", "d2"]
 
 
 def test_aggregate_usage_ignores_invalid_records():

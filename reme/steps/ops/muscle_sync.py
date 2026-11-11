@@ -12,6 +12,7 @@ from pathlib import Path
 from ...components import R
 from ..base_step import BaseStep
 from .cloud import CloudClient, cloud_settings
+from .connector_client import default_device_id
 from .usage import read_usage_records, usage_file_path
 
 SYNC_STATE_FILE = "sync_state.json"
@@ -84,9 +85,15 @@ class OpsMuscleSyncStep(BaseStep):
         delta = records[max(cursor, 0):]
 
         try:
+            device_id = str(
+                self.context.get("device_id")
+                or self.kwargs.get("device_id")
+                or default_device_id(),
+            )
             async with CloudClient(host, port, timeout) as cloud:
                 if delta:
-                    resp = await cloud.post("ops_usage_ingest", {"records": delta})
+                    # source_device makes the cloud breadth objective per-device.
+                    resp = await cloud.post("ops_usage_ingest", {"records": delta, "source_device": device_id})
                     if resp.get("success", False):
                         pushed = len(delta)
                         sync_state["synced_count"] = len(records)
@@ -94,7 +101,8 @@ class OpsMuscleSyncStep(BaseStep):
                     else:
                         errors.append(f"usage ingest failed: {resp.get('answer') or 'unknown error'}")
 
-                resp = await cloud.post("muscle_list", {})
+                # Scope-aware pull: general muscle + this device's own scope only.
+                resp = await cloud.post("muscle_list", {"for_device": device_id})
                 if not resp.get("success", False):
                     errors.append(f"muscle_list failed: {resp.get('answer') or 'unknown error'}")
                 else:

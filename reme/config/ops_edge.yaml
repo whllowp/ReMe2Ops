@@ -136,6 +136,7 @@ jobs:
         cloud_host: ${OPS_CLOUD_HOST:-127.0.0.1}
         cloud_port: ${OPS_CLOUD_PORT:-2444}
         cloud_timeout: 15.0
+        device_id: ${OPS_DEVICE_ID:-}
 
   ops_muscle_sync_cron:
     backend: cron

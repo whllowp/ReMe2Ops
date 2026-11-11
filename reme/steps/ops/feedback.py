@@ -2,6 +2,7 @@
 
 from ...components import R
 from ..base_step import BaseStep
+from .connector_client import default_device_id
 from .usage import (
     aggregate_usage,
     append_usage_record,
@@ -38,6 +39,7 @@ class OpsFeedbackStep(BaseStep):
             "outcome": outcome,
             "query": str(self.context.get("query") or "").strip(),
             "session_id": str(self.context.get("session_id") or "").strip(),
+            "source_device": str(self.context.get("source_device") or self.kwargs.get("source_device") or default_device_id()),
         }
         append_usage_record(usage_path, record)
         stats = aggregate_usage(read_usage_records(usage_path)).get(path, {})

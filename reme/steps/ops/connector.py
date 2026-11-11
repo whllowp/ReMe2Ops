@@ -16,7 +16,9 @@ to the plain ``http`` service backend removes the connector entirely.
 
 import asyncio
 import datetime as dt
+import hashlib
 import json
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from fastapi import WebSocket, WebSocketDisconnect
@@ -28,6 +30,50 @@ if TYPE_CHECKING:
     from ...application import Application
 
 PROTOCOL_VERSION = 1
+
+
+def event_id(payload: dict) -> str:
+    """Deterministic frame identity (Apiary-style exactly-once key)."""
+    material = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()[:24]
+
+
+class EventLedger:
+    """Append-only connector event log with duplicate detection.
+
+    Every delivered frame is appended to ``metadata/ops_events/events.jsonl``
+    (the operational log IS the data — Apiary); ``seen`` backs the usage.delta
+    dedup so a retried frame is acked but not double-ingested.
+    """
+
+    def __init__(self, workspace, metadata_dir: str):
+        self.dir = Path(workspace) / metadata_dir / "ops_events"
+        self.log_path = self.dir / "events.jsonl"
+        self.seen_path = self.dir / "seen_ids.json"
+        self._seen: set[str] | None = None
+
+    def _load_seen(self) -> set[str]:
+        if self._seen is None:
+            try:
+                data = json.loads(self.seen_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                data = []
+            self._seen = {str(item) for item in data} if isinstance(data, list) else set()
+        return self._seen
+
+    def is_duplicate(self, identifier: str) -> bool:
+        return identifier in self._load_seen()
+
+    def record(self, identifier: str, payload: dict) -> None:
+        """Log the frame and remember its id; capped seen-set avoids unbounded growth."""
+        seen = self._load_seen()
+        seen.add(identifier)
+        if len(seen) > 4096:
+            self._seen = set(sorted(seen)[-2048:])
+        self.dir.mkdir(parents=True, exist_ok=True)
+        self.seen_path.write_text(json.dumps(sorted(self._seen), ensure_ascii=False), encoding="utf-8")
+        with self.log_path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps({"event_id": identifier, "ts": now_iso(), **payload}, ensure_ascii=False) + "\n")
 
 
 def now_iso() -> str:
@@ -66,9 +112,10 @@ class Connection:
 class ConnectorRegistry:
     """Thread-light registry of live client sessions on the cloud side."""
 
-    def __init__(self):
+    def __init__(self, event_ledger: "EventLedger | None" = None):
         self._connections: dict[str, Connection] = {}
         self._lock = asyncio.Lock()
+        self.event_ledger = event_ledger
 
     @property
     def device_ids(self) -> list[str]:
@@ -101,7 +148,15 @@ class ConnectorRegistry:
             self._connections.pop(device_id, None)
 
     async def broadcast(self, payload: dict, exclude: set[str] | None = None) -> int:
-        """Send one event to every live client; dead sockets are pruned."""
+        """Send one event to every live client; dead sockets are pruned.
+
+        Each broadcast gets a deterministic ``event_id`` and is written to the
+        durable event ledger (Apiary: the operational log is the data).
+        """
+        if self.event_ledger is not None and not payload.get("event_id"):
+            payload = {**payload, "event_id": event_id(payload)}
+        if self.event_ledger is not None:
+            self.event_ledger.record(str(payload.get("event_id")), {"kind": "broadcast", **payload})
         delivered = 0
         message = json.dumps(payload, ensure_ascii=False)
         async with self._lock:
@@ -153,9 +208,14 @@ class OpsConnectorService(HttpService):
         self.connector_path = connector_path.rstrip("/") or "/ops/connector"
         self.devices_path = devices_path.rstrip("/") or "/ops/devices"
         self.connector_registry = ConnectorRegistry()
+        self.event_ledger: EventLedger | None = None
 
     def finalize_service(self, app: "Application") -> None:  # noqa: F821 - typing only
         """Attach connector routes before the SPA catch-all is mounted."""
+        app_config = app.context.app_config
+        self.event_ledger = EventLedger(app_config.workspace_dir, str(app_config.metadata_dir))
+        self.connector_registry.event_ledger = self.event_ledger
+
         async def devices():
             return {"success": True, "answer": f"{self.connector_registry.count()} client(s) connected", "metadata": {"devices": self.connector_registry.snapshot()}}
 
@@ -215,7 +275,11 @@ class OpsConnectorService(HttpService):
             await self.connector_registry.unregister(device_id, websocket)
 
     async def _ingest_usage(self, app, websocket: WebSocket, device_id: str, message: dict) -> None:
-        """Run the usage ingest job in-process; fast-track judge follows inside it."""
+        """Run the usage ingest job in-process; fast-track judge follows inside it.
+
+        Idempotent: a retried frame (same explicit or derived event_id) is
+        acked as a duplicate without double-ingesting its records.
+        """
         records = message.get("records")
         job = app.context.jobs.get("ops_usage_ingest")
         if job is None:
@@ -224,9 +288,22 @@ class OpsConnectorService(HttpService):
         if not isinstance(records, list):
             await websocket.send_text(json.dumps({"type": "error", "error": "records must be a list"}))
             return
+        identifier = str(message.get("event_id") or "") or event_id({"device": device_id, "records": records})
+        if self.event_ledger is not None and self.event_ledger.is_duplicate(identifier):
+            await websocket.send_text(json.dumps({
+                "type": "usage.acked",
+                "duplicate": True,
+                "event_id": identifier,
+                "accepted": 0,
+                "success": True,
+            }))
+            return
         response = await job(records=records, source_device=device_id)
+        if self.event_ledger is not None:
+            self.event_ledger.record(identifier, {"kind": "usage.delta", "device": device_id, "records": len(records)})
         await websocket.send_text(json.dumps({
             "type": "usage.acked",
+            "event_id": identifier,
             "accepted": (response.metadata.get("usage_ingest") or {}).get("accepted", 0),
             "fast_track_candidates": (response.metadata.get("usage_ingest") or {}).get("fast_track_candidates", []),
             "success": response.success,

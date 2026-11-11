@@ -115,6 +115,37 @@ async def test_session_protocol_hello_welcome_delta_ping_bye(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_usage_delta_duplicate_is_acked_without_reingest(tmp_path, monkeypatch):
+    import tempfile
+
+    workspace = tempfile.mkdtemp()
+    service = _service()
+    # point the ledger at a tmp workspace
+    from reme.steps.ops.connector import EventLedger
+
+    ledger = EventLedger(workspace, "metadata")
+    service.event_ledger = ledger
+    ws = FakeWebSocket(incoming=[
+        json.dumps({"type": "hello", "device_id": "edge-a"}),
+        json.dumps({"type": "usage.delta", "event_id": "evt-1", "records": [{"path": "p.md", "outcome": "solved"}]}),
+        json.dumps({"type": "usage.delta", "event_id": "evt-1", "records": [{"path": "p.md", "outcome": "solved"}]}),
+        json.dumps({"type": "bye"}),
+    ])
+    ingest_job = AsyncMock(return_value=Mock(success=True, metadata={"usage_ingest": {"accepted": 1, "fast_track_candidates": []}}))
+    app = SimpleNamespace(context=SimpleNamespace(jobs={"ops_usage_ingest": ingest_job}))
+
+    await service._connector_session(ws, app)
+    ingest_job.assert_awaited_once()  # second frame deduped
+    acks = [f for f in ws.frames() if f["type"] == "usage.acked"]
+    assert len(acks) == 2
+    assert acks[0].get("duplicate") is None
+    assert acks[1].get("duplicate") is True and acks[1]["event_id"] == "evt-1"
+    # the operational log persisted the delivered frame (Apiary)
+    log_lines = ledger.log_path.read_text(encoding="utf-8").strip().splitlines()
+    assert any("usage.delta" in line for line in log_lines)
+
+
+@pytest.mark.asyncio
 async def test_session_requires_hello_with_device_id():
     service = _service()
     ws = FakeWebSocket(incoming=[json.dumps({"type": "ping"})])
