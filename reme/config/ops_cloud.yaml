@@ -179,6 +179,65 @@ jobs:
     cron: "30 3 * * *"
     steps: *ops_policy_steps
 
+  # Lifecycle decay (memery): cold muscle SOPs are demoted back to the
+  # procedure bucket with tombstone stamps - reversible, never deleted.
+  ops_decay_scan:
+    backend: base
+    enable_serve: true
+    description: >-
+      Heat sweep over the muscle bucket (recency half-life + success rate +
+      access); SOPs below the cold bar move back to procedure with a
+      tombstone stamp and a negative muscle.updated broadcast.
+    parameters:
+      type: object
+      properties: {}
+    steps:
+      - backend: ops_decay_scan_step
+        cold_threshold: 0.25
+        half_life_days: 14.0
+        hit_cap: 10.0
+        max_demotions_per_run: 3
+
+  # SHARP device profile: dynamic memory bank with bounded updates.
+  ops_profile:
+    backend: base
+    enable_serve: true
+    description: >-
+      One SHARP update round for a device profile (long-term P + context C +
+      statistics S); input stays flat because each round only sees new events
+      plus the compressed previous profile.
+    parameters:
+      type: object
+      properties:
+        device_id:
+          type: string
+          description: "device to update; defaults to all-devices aggregate"
+          default: ""
+    steps:
+      - backend: ops_profile_step
+        update_timeout: 90.0
+
+  # Time-aware transition graphs (SHARP): global + time-conditioned views.
+  ops_transitions:
+    backend: base
+    enable_serve: true
+    description: "Rebuild SOP transition graphs (global/week-type/hour-bin/joint views)."
+    parameters:
+      type: object
+      properties: {}
+    steps:
+      - backend: ops_transitions_step
+
+  ops_maintenance_cron:
+    backend: cron
+    cron: "0 5 * * *"
+    steps:
+      - backend: ops_decay_scan_step
+        cold_threshold: 0.25
+        half_life_days: 14.0
+      - backend: ops_profile_step
+      - backend: ops_transitions_step
+
   # Generalize operator (Harmony Harness): audit muscle scope placement.
   ops_generalize:
     backend: base

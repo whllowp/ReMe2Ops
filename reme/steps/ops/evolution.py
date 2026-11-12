@@ -10,6 +10,8 @@ defaults, so the improvement is live on the next scan. The deployed policy is
 always among the candidates, hence never replaced by a worse one.
 """
 
+import json
+
 from ...components import R
 from ..base_step import BaseStep
 from .replay import (
@@ -53,12 +55,37 @@ def json_key(params: dict) -> str:
     return json.dumps(policy_params(params), sort_keys=True, ensure_ascii=False)
 
 
+def mutate_params(params: dict, rng) -> dict:
+    """One dreaming candidate: deterministic jitter around the incumbent."""
+    import copy
+
+    candidate = copy.deepcopy(params)
+    candidate["name"] = f"mut-{rng.randrange(10 ** 6):06d}"
+    if rng.random() < 0.6:
+        candidate["min_solved"] = max(int(round(float(candidate.get("min_solved", 1)))) + rng.choice((-1, 1)), 1)
+    if rng.random() < 0.6:
+        candidate["score_bar"] = round(min(max(float(candidate.get("score_bar", 0.55)) + rng.uniform(-0.05, 0.05), 0.1), 0.9), 4)
+    if rng.random() < 0.4:
+        candidate["min_success_rate"] = round(min(max(float(candidate.get("min_success_rate", 0.5)) + rng.uniform(-0.1, 0.1), 0.0), 1.0), 4)
+    return candidate
+
+
 @R.register("ops_replay_step")
 class OpsReplayStep(BaseStep):
-    """Score candidate promotion policies against recorded usage worlds."""
+    """Score candidate promotion policies against recorded usage worlds.
+
+    With ``rounds > 1`` this becomes the Dream-RSI dreaming phase proper:
+    each round mutates candidates around the incumbent (round-seeded RNG, so
+    runs are reproducible), replays, and tracks the round winner. Scores never
+    regress — the deployed policy stays in every pool — and a per-round curve
+    lands in ``metadata/ops_policy/evolution_log.jsonl``.
+    """
 
     async def execute(self):
         assert self.context is not None
+        import datetime as _dt
+        import random
+
         workspace = self.file_store.workspace_path
         metadata_dir = str(self.config_value("metadata_dir"))
         usage_path = usage_file_path(workspace, metadata_dir, cloud=True)
@@ -69,34 +96,71 @@ class OpsReplayStep(BaseStep):
             self.context.response.answer = "No replay worlds: usage history has no session/query grouping"
             return self.context.response
 
+        rounds = max(int(self.context.get("rounds") or self.kwargs.get("rounds") or 1), 1)
         raw = self.context.get("policies") or self.kwargs.get("policies") or []
-        policies = [policy_params(item) for item in raw] if isinstance(raw, list) and raw else default_candidate_grid(
-            load_deployed_policy_file(workspace, metadata_dir).get("params"),
-        )
+        explicit = isinstance(raw, list) and bool(raw)
 
-        ranking = []
-        for params in policies:
-            result = replay_score(trees, params)
-            ranking.append({"name": params["name"], "params": params, **result})
-        ranking.sort(key=lambda item: item["score"], reverse=True)
-
+        log_path = workspace / metadata_dir / "ops_policy" / "evolution_log.jsonl"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
         deployed = load_deployed_policy_file(workspace, metadata_dir)
         deployed_score = float(deployed.get("replay_score") or float("-inf"))
-        winner = ranking[0]
-        redeploy = winner["score"] > deployed_score
-        self.context["replay_winner"] = winner
-        self.context["replay_redeploy"] = redeploy
+        incumbent = deployed.get("params") or {"name": "seed"}
+        round_curve: list[dict] = []
+        overall_best: dict | None = None
+
+        with log_path.open("a", encoding="utf-8") as log:
+            for round_index in range(1, rounds + 1):
+                rng = random.Random(round_index * 7919)
+                if explicit and round_index == 1:
+                    pool = [policy_params(item) for item in raw]
+                else:
+                    base = (overall_best or {}).get("params") or incumbent
+                    pool = [policy_params(dict(base, name="incumbent"))]
+                    pool.extend(mutate_params(base, rng) for _ in range(max(POLICY_VERSIONS - 1, 1)))
+
+                ranking = []
+                for params in pool:
+                    normalized = policy_params(params)
+                    result = replay_score(trees, normalized)
+                    ranking.append({"name": normalized["name"], "params": normalized, **result})
+                ranking.sort(key=lambda item: item["score"], reverse=True)
+                winner = ranking[0]
+                if winner["score"] > deployed_score:
+                    deployed_score = winner["score"]
+                    overall_best = winner
+                    redeployed = True
+                else:
+                    redeployed = False
+                entry = {
+                    "round": round_index,
+                    "candidates": len(pool),
+                    "best_candidate": winner["name"],
+                    "best_score": winner["score"],
+                    "deployed_score": round(deployed_score, 4),
+                    "redeployed": redeployed,
+                    "ts": _dt.datetime.now().isoformat(timespec="seconds"),
+                }
+                round_curve.append(entry)
+                log.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+        if overall_best is None:
+            overall_best = {"name": str(incumbent.get("name")), "params": incumbent, "score": deployed_score}
+        self.context["replay_winner"] = overall_best
+        self.context["replay_redeploy"] = bool(
+            overall_best.get("params")
+            and overall_best["score"] > float(load_deployed_policy_file(workspace, metadata_dir).get("replay_score") or float("-inf")),
+        )
 
         self.context.response.answer = (
-            f"Replayed {len(policies)} policy/policies over {len(trees)} world(s); "
-            f"best={winner['name']} score={winner['score']}"
-            + ("" if redeploy else "; deployed policy still best")
+            f"Dreamed {rounds} round(s) over {len(trees)} world(s); "
+            f"best={overall_best['name']} score={overall_best['score']}; "
+            f"curve at {log_path.name}"
         )
         self.context.response.metadata["replay"] = {
             "worlds": len(trees),
-            "ranking": ranking,
-            "deployed_score": deployed.get("replay_score"),
-            "redeploy": redeploy,
+            "rounds": round_curve,
+            "winner": overall_best,
+            "redeploy": self.context["replay_redeploy"],
         }
         return self.context.response
 

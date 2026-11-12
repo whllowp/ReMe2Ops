@@ -12,6 +12,7 @@ import asyncio
 from ...components import R
 from ..base_step import BaseStep
 from .cloud import CloudClient, cloud_settings
+from .transitions import category_of, load_graphs, transition_support
 from .usage import aggregate_usage, read_usage_records, usage_file_path
 
 TIER_MUSCLE = "muscle"
@@ -118,6 +119,9 @@ class OpsSearchStep(BaseStep):
         workspace = self.file_store.workspace_path
         metadata_dir = str(self.config_value("metadata_dir"))
         usage_stats = aggregate_usage(read_usage_records(usage_file_path(workspace, metadata_dir)))
+        transition_boost = float(self.kwargs.get("transition_boost", 0.0))
+        graphs = load_graphs(workspace, metadata_dir) if transition_boost > 0.0 else {}
+        last_category = str(self.context.get("last_category") or self.kwargs.get("last_category") or "").strip()
 
         async def local_tier(tier: str, prefix: str) -> dict:
             if not prefix:
@@ -178,6 +182,18 @@ class OpsSearchStep(BaseStep):
             usage_boost=usage_boost,
             usage_aliases=usage_aliases,
         )
+        if transition_boost > 0.0 and graphs and last_category:
+            # SHARP-style time-conditioned structural support as a light bonus.
+            import datetime as _dt
+
+            now_text = _dt.datetime.now().isoformat(timespec="seconds")
+            for item in results:
+                support = transition_support(graphs, last_category, now_text, category_of(item["path"]))
+                if support > 0.0:
+                    item["score"] = round(item["score"] + transition_boost * support, 4)
+                    item["transition_support"] = support
+            results.sort(key=lambda item: item["score"], reverse=True)
+            results = results[:limit]
 
         answer_lines = []
         for item in results:
