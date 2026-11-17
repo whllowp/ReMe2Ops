@@ -8,6 +8,7 @@ from ...components.as_decision_model.base_as_decision_model import BaseAsDecisio
 from ...enumeration import ComponentEnum
 from ..base_step import BaseStep, Ref
 from .connector import broadcast_muscle_update
+from .dream_audit import DEFAULT_VERIFIED_STATUS
 from .judge import judge_sops
 from .multi_objective import (
     DEFAULT_WEIGHTS,
@@ -102,8 +103,11 @@ class OpsMusclePromoteStep(BaseStep):
             self.context.response.success = False
             self.context.response.answer = f"Error: move failed: {move_response.answer}"
             return self.context.response
+        # verified_status starts at the neutral default and is orthogonal to
+        # the promotion decision: only the dream audit (ops_dream_audit) moves
+        # it to confirmed/conflict, in the edge-side status ledger.
         stamp = {"memory_type": "muscle", "promoted_at": now_iso(), "promoted_from": path,
-                 "scope": "general"}
+                 "scope": "general", "verified_status": DEFAULT_VERIFIED_STATUS}
         if judge_probability is not None:
             stamp["promoted_by"] = "decision-model"
             stamp["judge_probability"] = round(float(judge_probability), 4)

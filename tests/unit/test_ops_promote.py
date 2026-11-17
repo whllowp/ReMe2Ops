@@ -98,6 +98,7 @@ async def test_promote_step_moves_and_stamps_frontmatter(tmp_path):
     assert stamp_call.args[0] == "frontmatter_update"
     assert stamp_call.kwargs["path"] == "digest/muscle/disk-full.md"
     assert stamp_call.kwargs["metadata"]["memory_type"] == "muscle"
+    assert stamp_call.kwargs["metadata"]["verified_status"] == "unconfirmed"  # neutral default; audit upgrades
     assert "promoted_by" not in stamp_call.kwargs["metadata"]
     # downstream reflex-card step consumes this context entry
     assert step.context["promoted"] == {"from": "digest/procedure/disk-full.md", "to": "digest/muscle/disk-full.md"}

@@ -4,14 +4,27 @@ The edge answers from what it holds locally first (muscle mirror = conditioned
 reflex, daily notes = working memory) and falls back to the cloud long-term
 digest per query. Tier weights express the muscle-memory priority; usage
 outcomes (solved/failed feedback) boost repeatedly-successful SOPs so the top
-hit is the best known solution, not merely a lexically close one.
+hit is the best known solution, not merely a lexically close one. The learning
+loop adds a muscle-layer-only verified-status weighting: a hash-gated
+``confirmed`` ledger entry boosts, a ``conflict`` penalizes — daily is
+transient working memory and cloud is remote, so neither carries a status.
 """
 
 import asyncio
+from pathlib import Path
 
 from ...components import R
 from ..base_step import BaseStep
 from .cloud import CloudClient, cloud_settings
+from .dream_audit import (
+    STATUS_CONFIRMED,
+    STATUS_CONFLICT,
+    VERIFIED_STATUS_VALUES,
+    audit_status_path,
+    ledger_status_for,
+    load_status_ledger,
+    read_body_text,
+)
 from .transitions import category_of, load_graphs, transition_support
 from .usage import aggregate_usage, read_usage_records, usage_file_path
 
@@ -45,6 +58,9 @@ def merge_tier_hits(
     usage_stats: dict[str, dict],
     usage_boost: float,
     usage_aliases: dict[str, str] | None = None,
+    status_by_path: dict[str, str] | None = None,
+    confirmed_boost: float = 0.0,
+    conflict_penalty: float = 0.0,
 ) -> list[dict]:
     """Merge per-tier ranked hit lists into one deduplicated, usage-boosted ranking.
 
@@ -54,6 +70,11 @@ def merge_tier_hits(
     pre-promotion digest paths, so usage history accumulated before promotion
     keeps boosting the file afterwards. Ties therefore favour the reflex tier,
     then recency of success.
+
+    ``status_by_path`` carries hash-gated verified statuses (muscle layer only,
+    from the audit ledger): ``confirmed`` adds ``confirmed_boost`` and
+    ``conflict`` subtracts ``conflict_penalty``; anything else — including a
+    hash-mismatched entry the caller already dropped — stays neutral.
     """
     merged: dict[str, dict] = {}
     for tier in tiers:
@@ -71,12 +92,20 @@ def merge_tier_hits(
                 if hit.get(key) and key not in item:
                     item[key] = hit[key]
     usage_aliases = usage_aliases or {}
+    status_by_path = status_by_path or {}
     for path, item in merged.items():
         usage = combined_usage(path, usage_stats, usage_aliases)
         item["usage"] = usage
         if usage["solved"] and usage_boost > 0.0:
             item["score"] += usage_boost * usage["solved"]
             item["usage_boosted"] = True
+        status = status_by_path.get(path)
+        if status:
+            item["verified_status"] = status
+            if status == STATUS_CONFIRMED and confirmed_boost > 0.0:
+                item["score"] += confirmed_boost
+            elif status == STATUS_CONFLICT and conflict_penalty > 0.0:
+                item["score"] -= conflict_penalty
     ranked = sorted(merged.values(), key=lambda item: item["score"], reverse=True)
     return ranked[: max(int(limit), 1)]
 
@@ -107,6 +136,8 @@ class OpsSearchStep(BaseStep):
         limit = max(int(self.context.get("limit") or self.kwargs.get("limit") or 5), 1)
         tier_limit = max(int(self.kwargs.get("tier_limit", 5)), 1)
         usage_boost = float(self.kwargs.get("usage_boost", 0.05))
+        confirmed_boost = float(self.kwargs.get("confirmed_boost", 0.0))
+        conflict_penalty = float(self.kwargs.get("conflict_penalty", 0.0))
         digest_dir = str(self.config_value("digest_dir")).strip("/")
         muscle_prefix = str(self.kwargs.get("muscle_prefix") or f"{digest_dir}/muscle").strip("/")
         daily_prefix = str(self.kwargs.get("daily_prefix") or self.config_value("daily_dir")).strip("/")
@@ -174,13 +205,17 @@ class OpsSearchStep(BaseStep):
             cloud_tier(),
         )
         tiers = [muscle_tier, daily_tier, cloud_result]
-        usage_aliases = await self._promotion_aliases(muscle_tier)
+        usage_aliases, frontmatter_statuses = await self._frontmatter_flags(muscle_tier)
+        status_by_path = self._ledger_statuses(muscle_tier, workspace, metadata_dir)
         results = merge_tier_hits(
             tiers,
             limit=limit,
             usage_stats=usage_stats,
             usage_boost=usage_boost,
             usage_aliases=usage_aliases,
+            status_by_path=status_by_path,
+            confirmed_boost=confirmed_boost,
+            conflict_penalty=conflict_penalty,
         )
         if transition_boost > 0.0 and graphs and last_category:
             # SHARP-style time-conditioned structural support as a light bonus.
@@ -209,27 +244,62 @@ class OpsSearchStep(BaseStep):
             tier["tier"]: {"hits": len(tier.get("hits") or []), "error": tier.get("error")} for tier in tiers
         }
         self.context.response.metadata["usage_boost"] = usage_boost
+        if frontmatter_statuses:
+            # Decorative stamps read in the same single get_nodes pass as the
+            # promotion aliases; informational only, weighting uses the ledger.
+            self.context.response.metadata["frontmatter_status"] = frontmatter_statuses
         return self.context.response
 
-    async def _promotion_aliases(self, muscle_tier: dict) -> dict[str, str]:
-        """Map promoted muscle paths to their pre-promotion digest paths.
+    def _ledger_statuses(self, muscle_tier: dict, workspace, metadata_dir: str) -> dict[str, str]:
+        """Hash-gated verified statuses for muscle hits, from the audit ledger.
 
-        Usage recorded before promotion is keyed by the long-term digest path;
-        the promoted file keeps that provenance in its ``promoted_from``
-        frontmatter field, so the reflex tier still gets the full boost.
+        This is the only weighting source: a ledger entry whose recorded
+        ``body_sha256`` no longer matches the mirror body is dropped, so a
+        mirror rewritten by muscle_sync falls back to neutral instead of
+        weighting a stale verdict. Daily/cloud hits never appear here.
         """
         hit_paths = sorted({hit["path"] for hit in muscle_tier.get("hits") or []})
         if not hit_paths:
             return {}
+        ledger = load_status_ledger(audit_status_path(Path(workspace), metadata_dir))
+        if not ledger:
+            return {}
+        statuses: dict[str, str] = {}
+        for path in hit_paths:
+            body = read_body_text(Path(workspace) / path)
+            if body is None:
+                continue
+            status = ledger_status_for(path, body, ledger)
+            if status:
+                statuses[path] = status
+        return statuses
+
+    async def _frontmatter_flags(self, muscle_tier: dict) -> tuple[dict[str, str], dict[str, str]]:
+        """Frontmatter flags of muscle hits: promotion aliases + stamped status.
+
+        Usage recorded before promotion is keyed by the long-term digest path;
+        the promoted file keeps that provenance in its ``promoted_from``
+        frontmatter field, so the reflex tier still gets the full boost. The
+        decorative ``verified_status`` stamp (wiped by every muscle_sync
+        rewrite) is returned for visibility; weighting authority is the
+        status ledger, not frontmatter.
+        """
+        hit_paths = sorted({hit["path"] for hit in muscle_tier.get("hits") or []})
+        if not hit_paths:
+            return {}, {}
         try:
             nodes = await self.file_store.get_nodes(hit_paths)
         except Exception as exc:  # noqa: BLE001
             self.logger.warning(f"[{self.name}] frontmatter lookup failed: {type(exc).__name__}: {exc}")
-            return {}
+            return {}, {}
         aliases: dict[str, str] = {}
+        statuses: dict[str, str] = {}
         for node in nodes or []:
             extras = getattr(node.front_matter, "model_extra", None) or {}
             promoted_from = str(extras.get("promoted_from") or "").strip()
             if promoted_from:
                 aliases[node.path] = promoted_from
-        return aliases
+            stamped = str(extras.get("verified_status") or "").strip().lower()
+            if stamped in VERIFIED_STATUS_VALUES:
+                statuses[node.path] = stamped
+        return aliases, statuses

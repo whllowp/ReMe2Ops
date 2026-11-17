@@ -39,6 +39,8 @@ jobs:
         muscle_weight: 1.0
         daily_weight: 0.6
         cloud_weight: 0.4
+        confirmed_boost: 0.05
+        conflict_penalty: 0.15
         cloud_host: ${OPS_CLOUD_HOST:-127.0.0.1}
         cloud_port: ${OPS_CLOUD_PORT:-2444}
         cloud_timeout: 8.0
@@ -74,6 +76,14 @@ jobs:
 
   ops_dream_push:
     backend: base
+    # Job-level hint (salience guidance) reaches dream extract/integrate via
+    # the RuntimeContext both call paths build from job kwargs; an explicit
+    # caller-supplied hint still wins over it.
+    hint: >-
+      salience: record only rules, policies, and lessons the environment cannot
+      reveal at run time (ordering constraints, permissions, failure causes);
+      failure lessons take priority over success stories; skip everything the
+      environment would re-reveal on the next run anyway.
     description: >-
       Extract memory units from recent daily notes and push them to the cloud
       for long-term integration; failed pushes stay deferred for the next run.
@@ -121,13 +131,61 @@ jobs:
   ops_dream_push_cron:
     backend: cron
     cron: "30 22 * * *"
+    hint: >-
+      salience: record only rules, policies, and lessons the environment cannot
+      reveal at run time (ordering constraints, permissions, failure causes);
+      failure lessons take priority over success stories; skip everything the
+      environment would re-reveal on the next run anyway.
     steps: *ops_push_steps
+
+  ops_dream_audit:
+    backend: base
+    enable_serve: true
+    description: >-
+      Dreaming correction: re-check muscle mirrors against session transcripts
+      and usage records, stamp confirmed/unconfirmed/conflict into the status
+      ledger (metadata/ops_audit/status.json), and write correction notes into
+      daily/ for the next dream push. Pure report without an LLM.
+    parameters:
+      type: object
+      properties:
+        date:
+          type: string
+          description: "YYYY-MM-DD anchor for correction notes; defaults to today"
+          default: ""
+    steps: &ops_audit_steps
+      - backend: ops_dream_audit_step
+        muscle_dir: digest/muscle
+        max_audit_per_run: 6
+        audit_timeout: 90.0
+        evidence_chars: 4000
+
+  ops_dream_audit_cron:
+    backend: cron
+    cron: "30 21 * * *"
+    steps: *ops_audit_steps
+
+  ops_reflex_index:
+    backend: base
+    enable_serve: true
+    description: >-
+      Rebuild the bounded MEMORY.md-style reflex index
+      (metadata/ops_index/MEMORY.md, 200 lines / 25KB cap) from the muscle
+      mirror and the audit status ledger; the session harness injects its head.
+    parameters:
+      type: object
+      properties: {}
+    steps:
+      - backend: ops_reflex_index_step
+        muscle_dir: digest/muscle
+        daily_limit: 5
 
   ops_muscle_sync:
     backend: base
     description: >-
       Push usage deltas to the cloud and mirror muscle SOPs into the local
-      digest/muscle directory; the index watcher picks up changes instantly.
+      digest/muscle directory; the index watcher picks up changes instantly and
+      the bounded reflex index is rebuilt afterwards.
     parameters:
       type: object
       properties: {}
@@ -137,6 +195,9 @@ jobs:
         cloud_port: ${OPS_CLOUD_PORT:-2444}
         cloud_timeout: 15.0
         device_id: ${OPS_DEVICE_ID:-}
+      - backend: ops_reflex_index_step
+        muscle_dir: digest/muscle
+        daily_limit: 5
 
   ops_muscle_sync_cron:
     backend: cron

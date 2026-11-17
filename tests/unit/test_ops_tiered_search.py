@@ -1,13 +1,16 @@
-"""Tiered ops search: per-path collapse, tier merge, and usage boost."""
+"""Tiered ops search: per-path collapse, tier merge, usage boost, status weighting."""
 
+import json
 from unittest.mock import AsyncMock, Mock
 
+import frontmatter
 import pytest
 
 from reme.components import ApplicationContext
 from reme.components.file_store import BaseFileStore
 from reme.components.runtime_context import RuntimeContext
 from reme.schema import FileFrontMatter
+from reme.steps.ops.dream_audit import body_sha256
 from reme.steps.ops.tiered_search import OpsSearchStep, best_path_scores, combined_usage, merge_tier_hits
 
 
@@ -65,6 +68,51 @@ def test_merge_tier_hits_without_boost():
     tiers = [{"tier": "muscle", "weight": 1.0, "hits": [{"path": "digest/muscle/a.md"}]}]
     merged = merge_tier_hits(tiers, limit=5, usage_stats={}, usage_boost=0.05)
     assert "usage_boosted" not in merged[0]
+
+
+def test_merge_tier_hits_status_weighting_moves_ranking():
+    """Equal-score muscle hits: confirmed rises, conflict sinks, neutral is unchanged."""
+    tiers = [
+        {
+            "tier": "muscle",
+            "weight": 1.0,
+            "hits": [{"path": "digest/muscle/a.md"}, {"path": "digest/muscle/b.md"}],
+        },
+        {
+            "tier": "daily",
+            "weight": 1.0,
+            "hits": [{"path": "digest/muscle/b.md"}, {"path": "digest/muscle/a.md"}],
+        },
+    ]
+    base = 1 / 2 + 1 / 3  # a and b accumulate identical scores across the tiers
+
+    confirmed = merge_tier_hits(
+        tiers,
+        limit=5,
+        usage_stats={},
+        usage_boost=0.05,
+        status_by_path={"digest/muscle/a.md": "confirmed"},
+        confirmed_boost=0.05,
+    )
+    assert [item["path"] for item in confirmed] == ["digest/muscle/a.md", "digest/muscle/b.md"]
+    assert confirmed[0]["score"] == pytest.approx(base + 0.05)
+    assert confirmed[0]["verified_status"] == "confirmed"
+    assert "verified_status" not in confirmed[1]
+
+    conflict = merge_tier_hits(
+        tiers,
+        limit=5,
+        usage_stats={},
+        usage_boost=0.05,
+        status_by_path={"digest/muscle/a.md": "conflict"},
+        conflict_penalty=0.15,
+    )
+    assert [item["path"] for item in conflict] == ["digest/muscle/b.md", "digest/muscle/a.md"]
+    assert conflict[1]["score"] == pytest.approx(base - 0.15)
+
+    neutral = merge_tier_hits(tiers, limit=5, usage_stats={}, usage_boost=0.05)
+    assert neutral[0]["score"] == pytest.approx(neutral[1]["score"])  # no status: identical
+    assert all("verified_status" not in item for item in neutral)
 
 
 def test_combined_usage_sums_promotion_alias():
@@ -238,3 +286,70 @@ async def test_ops_search_step_requires_query(tmp_path, monkeypatch):
     response = await step(RuntimeContext(query="   "))
     assert response.success is False
     assert "query" in response.answer
+
+
+@pytest.mark.asyncio
+async def test_ops_search_step_weights_from_hash_gated_ledger(tmp_path, monkeypatch):
+    """Muscle status weighting comes from the ledger and only while the mirror
+    body hash still matches; a tampered mirror drops back to neutral."""
+    mirror = tmp_path / "digest" / "muscle" / "a.md"
+    mirror.parent.mkdir(parents=True)
+    stamp = {"name": "a", "promoted_from": "digest/procedure/a.md", "verified_status": "confirmed"}
+    mirror.write_text(frontmatter.dumps(frontmatter.Post("ledger body v1", **stamp)), encoding="utf-8")
+    ledger_path = tmp_path / "metadata" / "ops_audit" / "status.json"
+    ledger_path.parent.mkdir(parents=True)
+    ledger_path.write_text(
+        json.dumps({"digest/muscle/a.md": {"status": "confirmed", "body_sha256": body_sha256("ledger body v1")}}),
+        encoding="utf-8",
+    )
+
+    async def fake_run_job(name, /, **kwargs):
+        prefix = kwargs["search_filter"]["path_prefixes"][0]
+        hit = {"path": "digest/muscle/a.md", "text": "runbook", "scores": {"score": 0.03}}
+        results = [hit] if prefix == "digest/muscle" else []
+        return _search_response(results)
+
+    class StubCloud:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc_info):
+            return False
+
+        async def post(self, action, payload):
+            return {"success": True, "metadata": {"hits": []}}
+
+    monkeypatch.setattr("reme.steps.ops.tiered_search.CloudClient", StubCloud)
+    node = Mock(
+        path="digest/muscle/a.md",
+        front_matter=FileFrontMatter(name="a", promoted_from="digest/procedure/a.md", verified_status="confirmed"),
+    )
+    store = Mock(spec=BaseFileStore)
+    store.workspace_path = tmp_path
+    store.get_nodes = AsyncMock(return_value=[node])
+    step = OpsSearchStep(
+        app_context=ApplicationContext(workspace_dir=str(tmp_path)),
+        file_store=store,
+        confirmed_boost=0.05,
+        conflict_penalty=0.15,
+    )
+    step.run_job = AsyncMock(side_effect=fake_run_job)
+
+    first = await step(RuntimeContext(query="disk full"))
+    top = first.metadata["results"][0]
+    assert top["verified_status"] == "confirmed"
+    assert top["score"] == pytest.approx(0.5 + 0.05)  # muscle rank-1 weight + confirmed boost
+    assert first.metadata["frontmatter_status"] == {"digest/muscle/a.md": "confirmed"}
+
+    # Tampering the mirror body breaks the ledger hash: weighting zeroes out.
+    mirror.write_text(frontmatter.dumps(frontmatter.Post("tampered body", **stamp)), encoding="utf-8")
+    second = await step(RuntimeContext(query="disk full"))
+    top2 = second.metadata["results"][0]
+    assert "verified_status" not in top2
+    assert top2["score"] == pytest.approx(0.5)  # neutral muscle weight only
+
+    assert store.get_nodes.await_count == 2  # one frontmatter pass per search
+    assert all(call.args[0] == ["digest/muscle/a.md"] for call in store.get_nodes.await_args_list)

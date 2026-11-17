@@ -228,6 +228,25 @@ jobs:
     steps:
       - backend: ops_transitions_step
 
+  # Second dreaming pass (deterministic): redirect dangling wikilinks to
+  # existing pages and stub pages with enough inbound links. daily/ targets
+  # are intentional provenance virtual nodes and are never repaired.
+  ops_link_repair:
+    backend: base
+    enable_serve: true
+    description: >-
+      Repair dangling wikilinks in the long-term digest: redirect to the most
+      similar existing page, or create a stub page when enough sources link to
+      the missing target. No LLM, capped per run, daily links stay virtual.
+    parameters:
+      type: object
+      properties: {}
+    steps:
+      - backend: ops_link_repair_step
+        similarity_threshold: 0.85
+        min_inbound_for_stub: 2
+        max_repairs_per_run: 5
+
   ops_maintenance_cron:
     backend: cron
     cron: "0 5 * * *"
@@ -237,6 +256,10 @@ jobs:
         half_life_days: 14.0
       - backend: ops_profile_step
       - backend: ops_transitions_step
+      - backend: ops_link_repair_step
+        similarity_threshold: 0.85
+        min_inbound_for_stub: 2
+        max_repairs_per_run: 5
 
   # Generalize operator (Harmony Harness): audit muscle scope placement.
   ops_generalize:
