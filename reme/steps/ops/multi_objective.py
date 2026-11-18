@@ -63,18 +63,25 @@ def update_ideal_point(ideal: dict, vectors: list[dict]) -> dict:
     return updated
 
 
-def objective_vector(stats: dict, *, solved_cap: float = 1.0, total_devices: int = 0) -> dict:
+def objective_vector(stats: dict, *, solved_cap: float = 1.0, total_devices: int = 0, independent_only: bool = False) -> dict:
     """Extract the three RAW objectives for one usage-stat row.
 
     - ``rate``: solved share of all recorded outcomes, in [0, 1].
-    - ``solved``: raw successful-use count.
-    - ``breadth``: raw distinct-device count.
+    - ``solved``: raw successful-use count — or, with ``independent_only`` on,
+      the session-independent count (``distinct_session_solved``) when the key
+      is present; stats without the key (older aggregates, raw replay rows)
+      fall back to the raw count.
+    - ``breadth``: raw distinct-device count (never session-deduped).
 
     ``solved_cap`` / ``total_devices`` are accepted for call compatibility but
     no longer clamp: the ideal point carries the scale, not a synthetic cap.
     """
     rate = min(max(float(stats.get("success_rate") or 0.0), 0.0), 1.0)
     solved = int(stats.get("solved") or 0)
+    if independent_only:
+        distinct = stats.get("distinct_session_solved")
+        if distinct is not None:
+            solved = int(distinct)
     devices = int(stats.get("devices") or 0)
     return {"rate": rate, "solved": solved, "breadth": devices}
 
@@ -111,12 +118,15 @@ def rank_promotion_candidates(
     min_success_rate: float,
     score_threshold: float,
     procedure_dir: str,
+    independent_only: bool = False,
 ) -> list[dict]:
     """Score procedure SOPs; return feasible candidates ordered best-first.
 
     Hard floors (``min_solved`` / ``min_success_rate``) stay as a feasibility
-    prefilter — the evidence floor — while ordering and acceptance come from
-    the Tchebycheff score against ``score_threshold``.
+    prefilter — the evidence floor, always on the RAW solved count — while
+    ordering and acceptance come from the Tchebycheff score against
+    ``score_threshold``. With ``independent_only`` on, the solved *objective*
+    reads the session-independent count (see :func:`objective_vector`).
     """
     total_devices = total_device_population(usage_stats)
     floor_prefix = f"{procedure_dir.strip('/')}/"
@@ -128,7 +138,7 @@ def rank_promotion_candidates(
         rate = float(stats.get("success_rate") or 0.0)
         if solved < min_solved or rate < min_success_rate:
             continue
-        vector = objective_vector(stats)
+        vector = objective_vector(stats, independent_only=independent_only)
         score = tchebycheff_score(vector, ideal, weights)
         candidates.append({
             "path": path,

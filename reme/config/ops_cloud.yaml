@@ -49,6 +49,13 @@ jobs:
         - units
     steps:
       - backend: ops_ingest_seed_step
+      # Defense gate 2 (cloud inbound): block mode discards units whose
+      # name/summary still carries PII/secret patterns after the edge gate.
+      # Rejection reasons ride the existing metadata["rejected"] channel back
+      # to the edge and the unit is never retried (re-extraction would only
+      # reproduce the same secret); a daily defense report keeps it auditable.
+      - backend: ops_defense_scan_step
+        mode: block
       - backend: dream_integrate_step
       - backend: auto_tag_step
 
@@ -142,6 +149,10 @@ jobs:
         # min_solved/min_success_rate/score_threshold default to the deployed
         # replay policy (metadata/ops_policy/policy.json) when not set here.
         max_promotions_per_run: 3
+        # Evidence independence (Sage-Taiyi): repeated solves of the same SOP
+        # inside one session count once toward the solved objective; the raw
+        # min_solved floor and the distinct-device breadth term are unaffected.
+        independent_only: true
         as_decision_model: muscle
         decision_fast_track: true
         fast_track_min_solved: 1
@@ -172,7 +183,17 @@ jobs:
             type: object
     steps: &ops_policy_steps
       - backend: ops_replay_step
+        # Sage-Taiyi cognitive repertoire: mutate the method space (λ weights +
+        # solved_cap), not only the thresholds. Deterministic, round-seeded.
+        mutate_weights: true
+        # Same evidence basis as the live promotion scan (its independent_only:
+        # true below in ops_promotion_cron) — dreaming must tune thresholds on
+        # the counting basis the scan actually applies.
+        independent_only: true
       - backend: ops_policy_evolve_step
+      # Round-10: dream-calibrate the retrieval boost weights into
+      # metadata/ops_policy/ranking.json; travels to edges via muscle_list.
+      - backend: ops_ranking_calibrate_step
 
   ops_policy_evolve_cron:
     backend: cron
@@ -247,6 +268,62 @@ jobs:
         min_inbound_for_stub: 2
         max_repairs_per_run: 5
 
+  # Evidence ledger (Hindsight Consolidation): structured, auditable proof and
+  # conflict counters per digest node, derived deterministically from the
+  # ## Sources wikilinks plus the cloud usage aggregate. Feeds ranking
+  # calibration and future retrieval weighting.
+  ops_evidence:
+    backend: base
+    enable_serve: true
+    description: >-
+      Build the evidence ledger (metadata/ops_evidence/ledger.json): per
+      digest node, deduped ## Sources provenance with proof_count plus
+      conflict_count/last_conflict_at from failed usage. Deterministic, no
+      LLM, idempotent rebuild.
+    parameters:
+      type: object
+      properties: {}
+    steps:
+      - backend: ops_evidence_step
+
+  # Source reverse index (Sage-Taiyi Evidence State): {source_path: [citing
+  # digest nodes]} for targeted revision of affected judgments, plus a
+  # shared_source_nodes report (sources cited by >= 2 nodes = shared-premise
+  # evidence). Complement to ops_evidence (per-node forward view).
+  ops_source_index:
+    backend: base
+    enable_serve: true
+    description: >-
+      Build the source reverse index (metadata/ops_source_index.json): per
+      source path, the digest nodes citing it in ## Sources, plus a report of
+      sources cited by two or more nodes. Deterministic, no LLM, idempotent
+      rebuild; dangling daily/ targets are indexed as intentional virtual
+      provenance nodes.
+    parameters:
+      type: object
+      properties: {}
+    steps:
+      - backend: ops_source_index_step
+
+  # Failure notes (JARVIS-1): the SOP body absorbs failed-usage lessons —
+  # each failure makes the next execution better prepared. Muscle canonical
+  # updates propagate to edges via the existing mtime sync → re-audit chain.
+  ops_failure_notes:
+    backend: base
+    enable_serve: true
+    description: >-
+      Append (date, query) failure notes to the ## Failure Notes section of
+      the SOP behind each failed usage record (direct path hit, or muscle
+      canonical resolved via promoted_from), stamping failure_count in the
+      frontmatter. Deduped per query, newest first, capped; existing files
+      only — never creates one.
+    parameters:
+      type: object
+      properties: {}
+    steps:
+      - backend: ops_failure_notes_step
+        max_failure_notes: 5
+
   ops_maintenance_cron:
     backend: cron
     cron: "0 5 * * *"
@@ -260,6 +337,15 @@ jobs:
         similarity_threshold: 0.85
         min_inbound_for_stub: 2
         max_repairs_per_run: 5
+      # Failure notes (JARVIS-1 cross-epoch improvement): write failed usage
+      # evidence back into the SOP body (## Failure Notes + failure_count),
+      # resolving promoted usage paths to the muscle canonical via
+      # promoted_from. Rewrites existing files only, never creates one.
+      - backend: ops_failure_notes_step
+        max_failure_notes: 5
+      # Ledger and reverse index rebuild last: both see the post-repair graph.
+      - backend: ops_evidence_step
+      - backend: ops_source_index_step
 
   # Generalize operator (Harmony Harness): audit muscle scope placement.
   ops_generalize:

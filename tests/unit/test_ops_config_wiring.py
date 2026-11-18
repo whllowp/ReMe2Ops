@@ -6,6 +6,11 @@ lost in an edit. Loads the built-in configs the same way the parser tests do.
 """
 
 from reme.config.config_parser import _load_config
+from reme.steps.ops.tiered_search import (
+    DEFAULT_CONFIRMED_BOOST,
+    DEFAULT_CONFLICT_PENALTY,
+    DEFAULT_USAGE_BOOST,
+)
 
 
 def _edge() -> dict:
@@ -53,10 +58,29 @@ def test_muscle_sync_rebuilds_the_reflex_index():
 
 
 def test_edge_search_weights_verified_status():
+    """Round 10: explicit boost keys were removed from ops_search_step so the
+    deployed ranking snapshot wins over the YAML; the bootstrap values live as
+    tiered_search.py built-ins and must keep their shipped magnitudes."""
     step = _edge()["jobs"]["ops_search"]["steps"][0]
     assert step["backend"] == "ops_search_step"
-    assert step["confirmed_boost"] == 0.05
-    assert step["conflict_penalty"] == 0.15
+    assert "usage_boost" not in step
+    assert "confirmed_boost" not in step
+    assert "conflict_penalty" not in step
+    assert (DEFAULT_USAGE_BOOST, DEFAULT_CONFIRMED_BOOST, DEFAULT_CONFLICT_PENALTY) == (0.05, 0.05, 0.15)
+
+
+def test_policy_evolve_evidence_basis_matches_promotion_scan():
+    """Round-10 review fix: the replay/evolve chain must tune thresholds on the
+    same session-deduped counting basis the promotion scan applies."""
+    cloud = _cloud()
+    replay_step = cloud["jobs"]["ops_policy_evolve"]["steps"][0]
+    assert replay_step["backend"] == "ops_replay_step"
+    assert replay_step["independent_only"] is True
+    scan = cloud["jobs"]["ops_promotion_cron"]["steps"][0]
+    assert scan["backend"] == "ops_promotion_scan_step"
+    assert scan["independent_only"] is True  # same basis on both sides
+    cron_replay = cloud["jobs"]["ops_policy_evolve_cron"]["steps"][0]
+    assert cron_replay["independent_only"] is True  # shared anchor survives edits
 
 
 def test_cloud_has_link_repair_job_and_maintenance_slot():

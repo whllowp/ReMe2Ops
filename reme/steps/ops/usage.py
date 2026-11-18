@@ -55,15 +55,35 @@ def now_iso() -> str:
     return dt.datetime.now().isoformat(timespec="seconds")
 
 
-def aggregate_usage(records: list[dict]) -> dict[str, dict]:
+def solved_session_key(record: dict, fallback: str) -> str:
+    """Evidence identity of one solved record — the shared counting rule.
+
+    A session id is the evidence unit (Sage-Taiyi: several observations sharing
+    one unexamined premise do not independently support each other); a solved
+    record without one counts as its own evidence, so unsessioned histories
+    keep their raw counts. Both the online aggregate and the replay simulator
+    must call this exact function or their evidence semantics can drift.
+    """
+    return str(record.get("session_id") or "").strip() or fallback
+
+
+def aggregate_usage(records: list[dict], *, session_dedupe: bool = False) -> dict[str, dict]:
     """Aggregate records by digest path into counters.
 
     Returns ``{path: {solved, failed, total, success_rate, last_used, devices,
     device_list}}``; records with an unknown path or outcome are ignored. The
     ``devices``/``device_list`` fields back the multi-objective breadth term.
+
+    With ``session_dedupe`` on (explicit opt-in), every entry additionally
+    carries ``distinct_session_solved``: the number of distinct evidence
+    identities among its solved records per :func:`solved_session_key` —
+    repeated solves inside one session count once, session-less solves each
+    count, so an unsessioned aggregate falls back to the raw count. The
+    default off keeps the output byte-identical to the historical shape.
     """
     stats: dict[str, dict] = {}
-    for record in records:
+    solved_sessions: dict[str, set[str]] = {}
+    for index, record in enumerate(records):
         if not isinstance(record, dict):
             continue
         path = str(record.get("path") or "").strip()
@@ -84,4 +104,9 @@ def aggregate_usage(records: list[dict]) -> dict[str, dict]:
         if device and device not in entry["device_list"]:
             entry["device_list"].append(device)
             entry["devices"] = len(entry["device_list"])
+        if session_dedupe and outcome == "solved":
+            solved_sessions.setdefault(path, set()).add(solved_session_key(record, f"record:{index}"))
+    if session_dedupe:
+        for path, entry in stats.items():
+            entry["distinct_session_solved"] = len(solved_sessions.get(path, ()))
     return stats

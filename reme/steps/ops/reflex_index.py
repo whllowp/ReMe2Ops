@@ -50,20 +50,27 @@ _MIN_RENDER_LINES = len(_HEADER_LINES) + 2  # header + one entry + footer
 def index_entries(mirrors: dict[str, dict], ledger: dict) -> list[dict]:
     """Muscle mirror entries with hash-gated ledger status, sorted by path.
 
-    ``mirrors`` maps path → ``{description, scope, body}``. The status comes
-    from the audit ledger and only while the recorded ``body_sha256`` still
-    matches the mirror body; anything else renders as ``unconfirmed``.
+    ``mirrors`` maps path → ``{description, scope, body, failure_count?}``.
+    The status comes from the audit ledger and only while the recorded
+    ``body_sha256`` still matches the mirror body; anything else renders as
+    ``unconfirmed``. ``has_failures`` mirrors the failure-notes frontmatter
+    (JARVIS-1 preflight): display only, never a ranking or weighting input.
     """
     entries: list[dict] = []
     for path in sorted(mirrors):
         info = mirrors[path] or {}
         status = ledger_status_for(path, str(info.get("body") or ""), ledger)
+        try:
+            failure_count = int(info.get("failure_count") or 0)
+        except (TypeError, ValueError):
+            failure_count = 0
         entries.append(
             {
                 "path": path,
                 "description": str(info.get("description") or ""),
                 "scope": str(info.get("scope") or "general"),
                 "verified_status": status if status in VERIFIED_STATUS_VALUES else STATUS_UNCONFIRMED,
+                "has_failures": failure_count > 0,
             },
         )
     return entries
@@ -91,8 +98,9 @@ def render_memory_index(
         lines.append("- (no muscle SOPs mirrored yet)")
     for entry in entries:
         headline = entry.get("description") or "(no description)"
+        flag = " [F]" if entry.get("has_failures") else ""  # failure notes present; display only
         lines.append(
-            f"- [[{entry['path']}]] [{entry['verified_status']}] (scope={entry['scope']}) — {headline}",
+            f"- [[{entry['path']}]] [{entry['verified_status']}] (scope={entry['scope']}) — {headline}{flag}",
         )
     lines.extend(_DAILY_HEADING)
     if not daily_pointers:
@@ -155,6 +163,7 @@ class OpsReflexIndexStep(BaseStep):
                 "description": str(post.metadata.get("description") or ""),
                 "scope": str(post.metadata.get("scope") or "general"),
                 "body": post.content,
+                "failure_count": post.metadata.get("failure_count") or 0,
             }
         ledger = load_status_ledger(audit_status_path(workspace, metadata_dir))
         entries = index_entries(mirrors, ledger)

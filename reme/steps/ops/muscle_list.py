@@ -6,7 +6,14 @@ mechanisms download to every client; device-scoped ones only reach the named
 device. A pull with ``for_device`` therefore assembles the per-device view
 general ∪ own — the same composition idea the harness paper applies at
 inference time, applied at sync time.
+
+The pull also carries the deployed ranking policy (round-10 calibration) as
+``metadata["policy"]["ranking"]`` — the file content verbatim — so the
+existing ``muscle_list`` endpoint doubles as the cloud→edge policy deployment
+channel without a new route. The file list itself is untouched.
 """
+
+import json
 
 import frontmatter
 
@@ -35,13 +42,26 @@ def file_scope(file_path, workspace) -> str:
     return str(post.metadata.get("scope") or GENERAL_SCOPE).strip()
 
 
+def load_ranking_policy(workspace, metadata_dir: str) -> dict:
+    """Deployed ranking policy verbatim; {} when missing or corrupted."""
+    path = workspace / str(metadata_dir).strip("/") / "ops_policy" / "ranking.json"
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
 @R.register("ops_muscle_list_step")
 class OpsMuscleListStep(BaseStep):
-    """List muscle SOPs visible to one device (scope-filtered)."""
+    """List muscle SOPs visible to one device (scope-filtered) + policy piggyback."""
 
     async def execute(self):
         assert self.context is not None
         workspace = self.file_store.workspace_path
+        metadata_dir = str(self.config_value("metadata_dir"))
         digest_dir = str(self.config_value("digest_dir")).strip("/")
         muscle_rel = str(self.kwargs.get("muscle_dir") or f"{digest_dir}/muscle").strip("/")
         for_device = str(self.context.get("for_device") or self.kwargs.get("for_device") or "").strip()
@@ -80,4 +100,7 @@ class OpsMuscleListStep(BaseStep):
         self.context.response.metadata["for_device"] = for_device
         self.context.response.metadata["files"] = files
         self.context.response.metadata["skipped"] = skipped
+        policy = load_ranking_policy(workspace, metadata_dir)
+        if policy:
+            self.context.response.metadata["policy"] = {"ranking": policy}
         return self.context.response

@@ -35,12 +35,40 @@ jobs:
     steps:
       - backend: ops_search_step
         tier_limit: 5
-        usage_boost: 0.05
         muscle_weight: 1.0
         daily_weight: 0.6
         cloud_weight: 0.4
-        confirmed_boost: 0.05
-        conflict_penalty: 0.15
+        # Boost precedence (promote.py contract): explicit kwargs > deployed
+        # ranking snapshot > built-in defaults. The bootstrap values
+        # (usage_boost 0.05 / confirmed_boost 0.05 / conflict_penalty 0.15)
+        # moved into tiered_search.py so the round-10 dreaming calibration
+        # (metadata/ops_policy/ranking.json, deployed via muscle_list ->
+        # muscle_sync) takes effect automatically once it reaches the edge —
+        # explicit keys here would always override the deployed snapshot and
+        # make calibration dead code. Only set them explicitly to pin values.
+        # JARVIS-1 preflight (display only, never weighted): hits whose SOP
+        # carries ## Failure Notes get a warning line + preflight field.
+        preflight_warnings: true
+        # MATM state-conditioned key: infer_last_category infers last_category
+        # from the session's local usage history when the caller did not pass
+        # one; transition_boost > 0 is the second half of the wiring — it
+        # activates the structural-support term the inferred key feeds. Both
+        # keys are required for the pathway to be live.
+        infer_last_category: true
+        transition_boost: 0.1
+        # MATM §4.3 retrieval planner (deterministic heuristic, no LLM):
+        # cloud_gate_min_solved > 0 switches to two-phase search — local tiers
+        # first, cloud consulted only if the muscle top hit lacks decisive
+        # reflex evidence: usage solved >= cloud_gate_min_solved with
+        # success_rate >= cloud_gate_min_rate, or in-tier dominance
+        # top1/(top1+top2) >= cloud_gate_dominance. All criteria dimensionless
+        # (counts/ratios — retrieval scores are non-normalized and vary by
+        # query/branch mode). Latency honesty: a gate that stays closed turns
+        # max(local, cloud) into local + cloud; the saving exists only in the
+        # triggered direction. 0 keeps today's concurrent three-tier gather.
+        # To enable: cloud_gate_min_solved: 3  (optionally cloud_gate_min_rate:
+        # 0.8 / cloud_gate_dominance: 0.7, the defaults).
+        cloud_gate_min_solved: 0
         cloud_host: ${OPS_CLOUD_HOST:-127.0.0.1}
         cloud_port: ${OPS_CLOUD_PORT:-2444}
         cloud_timeout: 8.0
@@ -120,6 +148,12 @@ jobs:
         scan_days: 2
         max_units: 5
         max_chars_per_batch: 40000
+      # Defense gate 1 (edge outbound): scrub PII/secret hits from unit
+      # name/summary before anything leaves the device; hit values become
+      # [REDACTED:<pattern>] placeholders and units continue downstream.
+      # mode: block would discard hitting units once instead (see ops_cloud).
+      - backend: ops_defense_scan_step
+        mode: redact
       - backend: ops_push_step
         source_device: edge
         cloud_host: ${OPS_CLOUD_HOST:-127.0.0.1}

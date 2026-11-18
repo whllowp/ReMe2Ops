@@ -135,6 +135,14 @@ class OpsPromotionScanStep(BaseStep):
     min_solved/min_success_rate pair remains as a feasibility prefilter, and
     ``decision_fast_track`` still lets the decision model promote confident
     below-floor candidates.
+
+    ``independent_only`` (default false) switches the evidence basis to
+    session-independent counts: repeated solves of the same SOP inside one
+    session collapse to one piece of evidence (Sage-Taiyi: observations
+    sharing an unexamined premise do not independently support each other).
+    With the flag on, usage is aggregated with ``session_dedupe=True`` and the
+    solved objective reads ``distinct_session_solved``; the breadth objective
+    and the raw min_solved floor are unaffected.
     """
 
     as_decision_model = Ref(BaseAsDecisionModel, ComponentEnum.AS_DECISION_MODEL, optional=True)
@@ -166,8 +174,14 @@ class OpsPromotionScanStep(BaseStep):
         decision_fast_track = bool(self.kwargs.get("decision_fast_track", False))
         fast_track_min_solved = max(int(self.kwargs.get("fast_track_min_solved", 1)), 1)
         max_fast_tracks = max(int(self.kwargs.get("max_fast_tracks_per_run", 2)), 1)
+        # Evidence basis is a deployment choice, deliberately not policy-loaded:
+        # the replay-evolved policy tunes thresholds, not what counts as evidence.
+        independent_only = bool(self.kwargs.get("independent_only", False))
 
-        usage_stats = aggregate_usage(read_usage_records(usage_file_path(workspace, metadata_dir, cloud=True)))
+        usage_stats = aggregate_usage(
+            read_usage_records(usage_file_path(workspace, metadata_dir, cloud=True)),
+            session_dedupe=independent_only,
+        )
         ideal_path = ideal_point_path(workspace, metadata_dir)
         ideal = load_ideal_point(ideal_path)
 
@@ -179,6 +193,7 @@ class OpsPromotionScanStep(BaseStep):
             min_success_rate=min_success_rate,
             score_threshold=score_threshold,
             weights=weights,
+            independent_only=independent_only,
         )
         vectors = [{key: candidate[key] for key in ("rate", "solved", "breadth")} for candidate in candidates]
         ideal = update_ideal_point(ideal, vectors)
@@ -252,5 +267,6 @@ class OpsPromotionScanStep(BaseStep):
             "skipped": skipped,
             "ideal_point": {key: round(value, 4) for key, value in ideal.items()},
             "policy_applied": bool(self._policy),
+            "independent_only": independent_only,
         }
         return self.context.response

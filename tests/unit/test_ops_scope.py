@@ -51,6 +51,33 @@ async def test_muscle_list_filters_by_device_scope(tmp_path):
     assert len(response_all.metadata["files"]) == 3
 
 
+@pytest.mark.asyncio
+async def test_muscle_list_carries_policy_field_for_sync(tmp_path):
+    """Round-10 deployment channel: the cloud list piggybacks the ranking policy."""
+    _write_sop(tmp_path, "digest/muscle/general-runbook.md", scope="general")
+    policy_path = tmp_path / "metadata" / "ops_policy" / "ranking.json"
+    policy_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "deployed": {"usage_boost": 0.1, "confirmed_boost": 0.05, "conflict_penalty": 0.15},
+        "objective": 0.8,
+        "worlds": 5,
+    }
+    policy_path.write_text(json.dumps(payload, ensure_ascii=False, sort_keys=True), encoding="utf-8")
+
+    step = OpsMuscleListStep(app_context=ApplicationContext(workspace_dir=str(tmp_path)),
+                             file_store=Mock(spec=BaseFileStore, workspace_path=tmp_path))
+    response = await step(RuntimeContext(for_device="edge-a"))
+
+    assert response.metadata["policy"]["ranking"] == payload  # verbatim for muscle_sync to land
+    assert [f["path"] for f in response.metadata["files"]] == ["digest/muscle/general-runbook.md"]
+
+    # no calibration yet: no policy field, list unchanged
+    policy_path.unlink()
+    response2 = await step(RuntimeContext(for_device="edge-a"))
+    assert "policy" not in response2.metadata
+    assert len(response2.metadata["files"]) == 1
+
+
 AUDIT_JSON = json.dumps({"moves": [
     {"path": "digest/muscle/host-runbook.md", "action": "promote", "scope": "general", "reason": "generic"},
     {"path": "digest/muscle/general-2.md", "action": "demote", "scope": "device:edge-b", "device": "edge-b",

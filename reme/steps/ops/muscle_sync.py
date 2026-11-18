@@ -76,6 +76,7 @@ class OpsMuscleSyncStep(BaseStep):
         written: list[str] = []
         removed: list[str] = []
         unchanged = 0
+        policy_synced = False
         errors: list[str] = []
 
         sync_state = load_manifest(sync_state_path)  # same tolerant JSON loader
@@ -133,6 +134,20 @@ class OpsMuscleSyncStep(BaseStep):
                     unchanged = len(kept)
                     if written or removed:
                         save_manifest(manifest_path, manifest)
+
+                    # Policy deployment half-ring: the muscle_list pull carries
+                    # the deployed ranking policy; when the cloud does not send
+                    # one (absent block / missing field), the existing edge
+                    # snapshot is left untouched.
+                    policy_block = ((resp.get("metadata") or {}).get("policy") or {}).get("ranking")
+                    if isinstance(policy_block, dict) and policy_block:
+                        ranking_path = workspace / metadata_dir / "ops_policy" / "ranking.json"
+                        ranking_path.parent.mkdir(parents=True, exist_ok=True)
+                        ranking_path.write_text(
+                            json.dumps(policy_block, ensure_ascii=False, indent=2, sort_keys=True),
+                            encoding="utf-8",
+                        )
+                        policy_synced = True
         except Exception as exc:  # noqa: BLE001
             errors.append(f"cloud unreachable at {host}:{port}: {type(exc).__name__}: {exc}")
 
@@ -147,6 +162,7 @@ class OpsMuscleSyncStep(BaseStep):
                 "written": written,
                 "removed": removed,
                 "unchanged": unchanged,
+                "policy_synced": policy_synced,
                 "pending_usage": max(len(records) - (sync_state.get("synced_count") or 0), 0)
                 if errors
                 else 0,

@@ -20,6 +20,7 @@ import json
 from pathlib import Path
 
 from .multi_objective import DEFAULT_WEIGHTS
+from .usage import solved_session_key
 
 # Budget sweep: how lenient the score bar is during replay (Dream-RSI's rho).
 REPLAY_BARS = (0.25, 0.4, 0.55, 0.7, 0.85)
@@ -71,7 +72,7 @@ def policy_params(policy: dict) -> dict:
     }
 
 
-def replay_once(trees: list[list[dict]], params: dict) -> dict:
+def replay_once(trees: list[list[dict]], params: dict, *, independent_only: bool = False) -> dict:
     """Replay every world under one policy; return its (quality, cost) counts.
 
     The replayed universe is a single global promotion state: walking worlds in
@@ -79,6 +80,11 @@ def replay_once(trees: list[list[dict]], params: dict) -> dict:
     passes the policy floors and Tchebycheff bar (using fixed replay caps so
     the simulation is deterministic). Afterwards, a solved event on a
     would-be-muscle path is a reflex hit; a failed one is a false reflex.
+
+    With ``independent_only`` on, solved evidence is session-deduped via
+    :func:`solved_session_key` — the exact counting rule of the online
+    ``aggregate_usage(session_dedupe=True)`` — so replay and live scan share
+    the same evidence semantics.
     """
     from .multi_objective import (  # local import to avoid cycles in tests
         IDEAL_FLOOR,
@@ -93,12 +99,14 @@ def replay_once(trees: list[list[dict]], params: dict) -> dict:
     weights = params["weights"]
 
     stats: dict[str, dict] = {}
+    solved_sessions: dict[str, set[str]] = {}
     muscle: set[str] = set()
     promotions = 0
     reflex_hits = 0
     false_reflex = 0
     total_solved = 0
     total_failed = 0
+    event_index = 0
 
     for tree in trees:
         for record in tree:
@@ -110,6 +118,10 @@ def replay_once(trees: list[list[dict]], params: dict) -> dict:
             entry[outcome] += 1
             total = entry["solved"] + entry["failed"]
             entry["success_rate"] = round(entry["solved"] / total, 4)
+            if independent_only and outcome == "solved":
+                solved_sessions.setdefault(path, set()).add(solved_session_key(record, f"record:{event_index}"))
+                entry["distinct_session_solved"] = len(solved_sessions[path])
+            event_index += 1
 
             if outcome == "solved":
                 total_solved += 1
@@ -123,12 +135,17 @@ def replay_once(trees: list[list[dict]], params: dict) -> dict:
             # Evidence-driven promotion check after each event (like the live
             # scan, which runs after each sync): promote once, never demote.
             if path not in muscle and entry["solved"] >= min_solved and entry["success_rate"] >= min_rate:
-                vector = objective_vector(entry, solved_cap=cap, total_devices=IDEAL_FLOOR["breadth"] * 10)
+                vector = objective_vector(
+                    entry,
+                    solved_cap=cap,
+                    total_devices=IDEAL_FLOOR["breadth"] * 10,
+                    independent_only=independent_only,
+                )
                 if tchebycheff_score(vector, IDEAL_FLOOR, weights) <= bar:
                     muscle.add(path)
                     promotions += 1
 
-    return {
+    counts = {
         "promotions": promotions,
         "reflex_hits": reflex_hits,
         "false_reflex": false_reflex,
@@ -136,9 +153,23 @@ def replay_once(trees: list[list[dict]], params: dict) -> dict:
         "total_failed": total_failed,
         "muscle_size": len(muscle),
     }
+    if independent_only:
+        # Opt-in evidence view (same philosophy as aggregate_usage): the
+        # session-independent solved count per path, straight from the shared
+        # counting rule.
+        counts["distinct_solved_by_path"] = {
+            path: len(sessions) for path, sessions in sorted(solved_sessions.items())
+        }
+    return counts
 
 
-def replay_score(trees: list[list[dict]], params: dict, *, parallelism_penalty: float = 0.1) -> dict:
+def replay_score(
+    trees: list[list[dict]],
+    params: dict,
+    *,
+    independent_only: bool = False,
+    parallelism_penalty: float = 0.1,
+) -> dict:
     """Dream-RSI objective: hypervolume over the budget sweep, minus penalties.
 
     Sweeping the score bar across ``REPLAY_BARS`` yields (cost, quality) points
@@ -147,12 +178,18 @@ def replay_score(trees: list[list[dict]], params: dict, *, parallelism_penalty: 
     reach high quality with few promotions; the penalty term punishes the share
     of reflex misses among would-be reflex outcomes (the analogue of the paper's
     parallelism penalty: pay per bad decision, not per attempt).
+
+    ``independent_only`` threads through to every :func:`replay_once` call so
+    the deployed-policy evaluation runs under the same session-deduped
+    evidence semantics the live promotion scan uses when its
+    ``independent_only`` is on — thresholds tuned by dreaming must not target
+    a counting basis the scan no longer applies.
     """
     counts_by_bar: list[tuple[float, dict]] = []
     for bar in REPLAY_BARS:
         swept = dict(params)
         swept["score_bar"] = bar
-        counts = replay_once(trees, swept)
+        counts = replay_once(trees, swept, independent_only=independent_only)
         counts_by_bar.append((bar, counts))
 
     # Non-dominated quality-cost frontier: quality = reflex hits, cost = promotions.
